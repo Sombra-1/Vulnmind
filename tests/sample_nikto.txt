@@ -1,0 +1,19 @@
+- Nikto v2.1.6
+---------------------------------------------------------------------------
++ Target IP:          192.168.1.10
++ Target Hostname:    target.local
++ Target Port:        80
++ Start Time:         2024-01-15 10:30:00 (GMT0)
+---------------------------------------------------------------------------
++ Server: Apache/2.4.49 (Ubuntu)
++ /: The anti-clickjacking X-Frame-Options header is not present. See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options
++ /: The site's SSL certificate doesn't match the requested hostname.
++ OSVDB-3092: /admin/: This might be interesting.
++ OSVDB-3093: /.htaccess: Contains configuration and/or authorization information.
++ /: CVE-2021-41773 - Apache HTTP Server 2.4.49 Path Traversal and Remote Code Execution.
++ /cgi-bin/test.cgi: This CGI may be vulnerable to the Shellshock vulnerability (CVE-2014-6271).
++ /server-status: Apache Server Status page found. Reveals server internals.
++ 7915 requests: 0 error(s) and 7 item(s) reported on remote host
++ End Time:           2024-01-15 10:31:23 (GMT0) (83 seconds)
+---------------------------------------------------------------------------
++ 1 host(s) tested
