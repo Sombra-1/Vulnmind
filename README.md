@@ -36,7 +36,7 @@ pip install vulnmind
 Or from source:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/vulnmind
+git clone https://github.com/sombra-1/vulnmind
 cd vulnmind
 pip install -e .
 ```
@@ -122,8 +122,6 @@ Pull requests welcome. The most useful contributions:
 - New parsers (`vulnmind/parsers/`) — Metasploit, OpenVAS, Burp Suite, Nessus
 - Knowledge base entries (`vulnmind/knowledge/services.json`) — more services, more CVEs
 - Bug reports with sample scan files
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ---
 
