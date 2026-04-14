@@ -2,9 +2,10 @@
 cli.py — Entry point for VulnMind.
 
 Command structure:
-  vulnmind analyze <files> [--enrich] [--report pdf]
+  vulnmind analyze <files> [--enrich] [--deep] [--report pdf] [--output path] [--format text|json]
   vulnmind config set-key <api-key>
   vulnmind config show
+  vulnmind config clear
 """
 
 import random
@@ -151,15 +152,34 @@ def cli(ctx):
     "--report",
     type=click.Choice(["pdf"]),
     default=None,
-    help="Generate a PDF report (requires --enrich).",
+    help="Generate a PDF report.",
+)
+@click.option(
+    "--output",
+    default="vulnmind_report.pdf",
+    show_default=True,
+    help="Output filename for the PDF report.",
 )
 @click.option(
     "--enrich",
     is_flag=True,
     default=False,
-    help="Deep analysis: AI explanations, exploit commands, Metasploit modules.",
+    help="AI analysis: plain-English explanations, exploit commands, Metasploit modules.",
 )
-def analyze(files: tuple, report: str | None, enrich: bool):
+@click.option(
+    "--deep",
+    is_flag=True,
+    default=False,
+    help="Send more scanner evidence to the AI for richer analysis (requires --enrich).",
+)
+@click.option(
+    "--format", "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    show_default=True,
+    help="Output format. Use 'json' for machine-readable output.",
+)
+def analyze(files: tuple, report: str | None, output: str, enrich: bool, deep: bool, output_format: str):
     """
     Analyze one or more scanner output files.
 
@@ -174,9 +194,13 @@ def analyze(files: tuple, report: str | None, enrich: bool):
       vulnmind analyze scan.xml
       vulnmind analyze scan.xml nikto.txt
       vulnmind analyze scan.xml --enrich
-      vulnmind analyze scan.xml --enrich --report pdf
+      vulnmind analyze scan.xml --enrich --deep
+      vulnmind analyze scan.xml --report pdf --output report.pdf
+      vulnmind analyze scan.xml --format json > findings.json
     """
-    print_banner()
+    if output_format == "text":
+        print_banner()
+
     cfg = Config.load()
 
     # Only check for API key if --enrich was requested
@@ -204,42 +228,44 @@ def analyze(files: tuple, report: str | None, enrich: bool):
             sys.exit(1)
 
     if not all_findings:
-        console.print(Panel(
-            "No findings were extracted from the provided file(s).\n\n"
-            "This could mean:\n"
-            "  - The scan found no open ports or vulnerabilities\n"
-            "  - The file format wasn't recognised\n"
-            "  - The scan was incomplete or empty",
-            title="[yellow]No Findings[/yellow]",
-            border_style="yellow",
-        ))
+        if output_format == "json":
+            import json as _json
+            console.print(_json.dumps([]))
+        else:
+            console.print(Panel(
+                "No findings were extracted from the provided file(s).\n\n"
+                "This could mean:\n"
+                "  - The scan found no open ports or vulnerabilities\n"
+                "  - The file format wasn't recognised\n"
+                "  - The scan was incomplete or empty",
+                title="[yellow]No Findings[/yellow]",
+                border_style="yellow",
+            ))
         return
 
     # --- Knowledge base match (always runs, offline) ---
     findings = match_findings(all_findings)
 
-    # --- Deep enrich if requested ---
+    # --- AI enrich if requested ---
     if enrich:
         from vulnmind.ai import enrich_findings
-        findings = enrich_findings(findings, cfg)
+        findings = enrich_findings(findings, cfg, deep=deep)
+
+    # --- JSON output ---
+    if output_format == "json":
+        import json as _json
+        import dataclasses
+        console.print(_json.dumps([dataclasses.asdict(f) for f in findings], indent=2, default=str))
+        return
 
     # --- Display ---
     display_results(findings, enrich)
 
     # --- PDF ---
     if report == "pdf":
-        if not enrich:
-            console.print(Panel(
-                "PDF reports require the [bold]--enrich[/bold] flag.\n\n"
-                "Run: [bold]vulnmind analyze scan.xml --enrich --report pdf[/bold]",
-                title="[bold yellow]--enrich Required[/bold yellow]",
-                border_style="yellow",
-            ))
-        else:
-            from vulnmind.report import generate_pdf
-            output_path = "vulnmind_report.pdf"
-            generate_pdf(findings, output_path)
-            console.print(f"\n[green]Report saved:[/green] {output_path}")
+        from vulnmind.report import generate_pdf
+        generate_pdf(findings, output)
+        console.print(f"\n[green]Report saved:[/green] {output}")
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +291,15 @@ def config_set_key(api_key: str):
     cfg.set("groq_api_key", api_key)
     cfg.save()
     console.print(f"[green]API key saved.[/green] ({api_key[:8]}...)")
+
+
+@config.command("clear")
+def config_clear():
+    """Remove all saved configuration (API key and preferences)."""
+    cfg = Config.load()
+    cfg._data.clear()
+    cfg.save()
+    console.print("[green]Configuration cleared.[/green]")
 
 
 @config.command("show")
@@ -309,9 +344,10 @@ def display_results(findings: list, enrich: bool):
 
     if not enrich:
         console.print(Panel(
-            "Add [bold]--enrich[/bold] for AI explanations, exploit commands, and PDF reports.\n\n"
-            "Requires a free Groq API key: [bold]console.groq.com[/bold]",
-            title="[bold dim]Tip: Deep Analysis Available[/bold dim]",
+            "Add [bold]--enrich[/bold] for AI explanations, exploit commands, and Metasploit modules.\n"
+            "Add [bold]--report pdf[/bold] to export a PDF report.\n\n"
+            "[dim]--enrich requires a free Groq API key: console.groq.com[/dim]",
+            title="[bold dim]Tips[/bold dim]",
             border_style="dim",
             padding=(0, 2),
         ))

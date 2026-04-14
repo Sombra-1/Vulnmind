@@ -46,7 +46,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from vulnmind.parsers.base import Finding
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_MODEL = "llama-3.1-8b-instant"
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
 # How many chars of raw_evidence to send in normal vs --deep mode
 EVIDENCE_CHARS_NORMAL = 500

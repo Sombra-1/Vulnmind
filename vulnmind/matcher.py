@@ -85,6 +85,8 @@ def match_finding(finding) -> object:
         description=match.get("description") or finding.description,
         suggested_commands=finding.suggested_commands or commands,
         metasploit_modules=finding.metasploit_modules or match.get("metasploit_modules", []),
+        false_positive_likelihood=finding.false_positive_likelihood or "low",
+        false_positive_reason=finding.false_positive_reason or "Matched against known vulnerable service signature in offline knowledge base.",
     )
 
 
