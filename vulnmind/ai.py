@@ -162,7 +162,7 @@ def _build_prompt(finding: Finding, deep: bool) -> str:
     port_str = str(finding.port) if finding.port else "N/A"
     service_str = finding.service or "unknown"
 
-    prompt = f"""You are an expert penetration tester analyzing a security scan finding.
+    prompt = f"""You are an expert penetration tester and security engineer analyzing a scan finding.
 Analyze the finding below and respond with ONLY valid JSON — no markdown, no explanation outside the JSON.
 
 Finding details:
@@ -178,24 +178,28 @@ Finding details:
 
 Respond with this exact JSON structure (no other text):
 {{
-  "explanation": "2-3 sentence plain English explanation of what this vulnerability is and why it matters to a pentester",
+  "explanation": "2-4 sentence plain English explanation of what this vulnerability is, why it matters, and what an attacker can do with it",
   "priority": "critical|high|medium|low",
-  "priority_reason": "one sentence explaining the priority rating",
+  "priority_reason": "one sentence explaining exactly why this severity was chosen — cite the specific risk factor (e.g. unauthenticated RCE, default credentials, data exposure)",
   "suggested_commands": [
-    "exact shell command 1",
-    "exact shell command 2"
+    "exact shell command 1 targeting {finding.host}:{port_str}",
+    "exact shell command 2 targeting {finding.host}:{port_str}",
+    "exact shell command 3 for deeper enumeration or exploitation"
   ],
   "metasploit_modules": [
     "exact/module/path"
   ],
   "false_positive_likelihood": "low|medium|high",
-  "false_positive_reason": "one sentence explaining false positive assessment"
+  "false_positive_reason": "one sentence explaining false positive assessment — mention any conditions that could make this a non-issue",
+  "remediation": "2-3 concrete, actionable fix steps — version to upgrade to, config change to make, service to disable, or firewall rule to add"
 }}
 
 Rules:
-- suggested_commands must be exact, runnable shell commands with {finding.host} as the target
+- suggested_commands must be exact, runnable shell commands. Use {finding.host} as the target IP.
+- Include at least 2 commands: one to verify/confirm the issue, one to demonstrate impact
 - metasploit_modules must be exact module paths (e.g. exploit/unix/ftp/vsftpd_234_backdoor)
 - If no Metasploit module exists, use an empty array []
+- remediation must be specific — not "patch the software" but "upgrade to version X.Y.Z" or "set AllowEmptyPasswords no in sshd_config"
 - Do not include any text before or after the JSON object"""
 
     return prompt
@@ -220,7 +224,7 @@ def _call_groq(prompt: str, api_key: str, model: str) -> str:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
-            "max_tokens": 1024,
+            "max_tokens": 1500,
         },
         timeout=30,
     )
@@ -296,8 +300,10 @@ def _apply_enrichment(finding: Finding, data: dict) -> Finding:
         finding,
         ai_explanation=data.get("explanation") or finding.ai_explanation,
         priority=priority,
+        priority_reason=data.get("priority_reason") or finding.priority_reason,
         suggested_commands=data.get("suggested_commands") or finding.suggested_commands,
         metasploit_modules=data.get("metasploit_modules") or finding.metasploit_modules,
         false_positive_likelihood=fp_likelihood,
         false_positive_reason=data.get("false_positive_reason") or finding.false_positive_reason,
+        remediation=data.get("remediation") or finding.remediation,
     )

@@ -237,11 +237,33 @@ class NmapParser(BaseParser):
 
     def _make_open_port_finding(self, host, port, protocol, service_info, file_path) -> Finding:
         """Create a basic Finding for an open port with no NSE vuln scripts."""
-        title = f"Open port {port}/{protocol} ({service_info['display']})"
+        product = service_info.get("product", "")
+        version = service_info.get("version", "")
+        display = service_info["display"]
+
+        # Build a descriptive title that includes product+version when available
+        if product and version:
+            title = f"Open port {port}/{protocol} — {product} {version}"
+        elif product:
+            title = f"Open port {port}/{protocol} — {product}"
+        else:
+            title = f"Open port {port}/{protocol} ({display})"
+
         description = (
             f"Port {port}/{protocol} is open on {host}, "
-            f"running {service_info['display']}."
+            f"running {display}."
         )
+
+        # Include product and version explicitly in raw_evidence so the matcher
+        # can reliably extract them for CVE lookups.
+        evidence_parts = [f"host: {host}  port: {port}/{protocol}  state: open"]
+        evidence_parts.append(f"service: {service_info['name']}")
+        if product:
+            evidence_parts.append(f"product: {product}")
+        if version:
+            evidence_parts.append(f"version: {version}")
+        evidence_parts.append(display)
+
         return Finding(
             id=make_finding_id(host, port, title),
             source_tool="nmap",
@@ -253,7 +275,7 @@ class NmapParser(BaseParser):
             service=service_info["name"],
             title=title,
             description=description,
-            raw_evidence=f"{host}  {port}/{protocol}  open  {service_info['display']}",
+            raw_evidence="\n".join(evidence_parts),
             cve_ids=[],
         )
 

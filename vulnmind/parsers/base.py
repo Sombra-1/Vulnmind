@@ -112,6 +112,12 @@ class Finding:
     false_positive_reason: Optional[str] = None
     """AI explanation for the false_positive_likelihood rating."""
 
+    priority_reason: Optional[str] = None
+    """One sentence explaining why this priority was assigned."""
+
+    remediation: Optional[str] = None
+    """Concrete fix/remediation advice for this finding."""
+
 
 def make_finding_id(host: str, port: Optional[int], title: str) -> str:
     """Generate a short, deterministic ID for a finding.

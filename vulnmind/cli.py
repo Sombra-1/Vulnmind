@@ -373,12 +373,23 @@ def display_finding_panel(finding):
     if finding.cve_ids:
         lines.append(f"[dim]CVEs:[/dim]   [cyan]{', '.join(finding.cve_ids)}[/cyan]")
 
+    if finding.cvss_score is not None:
+        lines.append(f"[dim]CVSS:[/dim]   [bold]{finding.cvss_score:.1f}[/bold]")
+
+    if finding.priority_reason:
+        lines.append(f"[dim]Why {finding.priority or 'this priority'}:[/dim] [dim italic]{finding.priority_reason}[/dim italic]")
+
     lines.append("")
 
     if finding.ai_explanation:
         lines.append(finding.ai_explanation)
     else:
         lines.append(f"[dim]{finding.description}[/dim]")
+
+    if finding.remediation:
+        lines.append("")
+        lines.append("[bold]Remediation:[/bold]")
+        lines.append(f"  [blue]{finding.remediation}[/blue]")
 
     if finding.suggested_commands:
         lines.append("")

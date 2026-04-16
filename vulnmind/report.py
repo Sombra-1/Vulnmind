@@ -277,8 +277,12 @@ def _build_finding_section(finding, styles: dict) -> list:
         f"Tool: {finding.source_tool}",
         f"Priority: {priority.upper()}",
     ]
+    if finding.cvss_score is not None:
+        meta_parts.append(f"CVSS Score: {finding.cvss_score:.1f}")
     if finding.cve_ids:
         meta_parts.append(f"CVEs: {', '.join(finding.cve_ids)}")
+    if finding.priority_reason:
+        meta_parts.append(f"Priority reason: {finding.priority_reason}")
 
     for part in meta_parts:
         elements.append(Paragraph(safe_text(part), styles["meta_field"]))
@@ -292,6 +296,12 @@ def _build_finding_section(finding, styles: dict) -> list:
     elif finding.description:
         elements.append(Paragraph("Description", styles["h2"]))
         elements.append(Paragraph(safe_text(finding.description), styles["body"]))
+        elements.append(Spacer(1, 0.15 * inch))
+
+    # Remediation
+    if finding.remediation:
+        elements.append(Paragraph("Remediation", styles["h2"]))
+        elements.append(Paragraph(safe_text(finding.remediation), styles["body"]))
         elements.append(Spacer(1, 0.15 * inch))
 
     # Suggested commands

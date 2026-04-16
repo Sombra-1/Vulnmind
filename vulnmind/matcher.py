@@ -78,15 +78,25 @@ def match_finding(finding) -> object:
         for cmd in match.get("suggested_commands", [])
     ]
 
+    matched_priority = match.get("priority")
+    kb_priority_reason = match.get("priority_reason") or (
+        f"Matched offline KB entry for '{match.get('product') or service}' — "
+        f"known vulnerable service with {len(merged_cves)} associated CVE(s)."
+        if merged_cves else
+        f"Matched offline KB entry for '{match.get('product') or service}'."
+    )
+
     return replace(
         finding,
-        priority=finding.priority or match.get("priority"),
+        priority=finding.priority or matched_priority,
+        priority_reason=finding.priority_reason or kb_priority_reason,
         cve_ids=merged_cves,
         description=match.get("description") or finding.description,
         suggested_commands=finding.suggested_commands or commands,
         metasploit_modules=finding.metasploit_modules or match.get("metasploit_modules", []),
         false_positive_likelihood=finding.false_positive_likelihood or "low",
         false_positive_reason=finding.false_positive_reason or "Matched against known vulnerable service signature in offline knowledge base.",
+        remediation=finding.remediation or match.get("remediation"),
     )
 
 
@@ -102,35 +112,100 @@ def match_findings(findings: list) -> list:
 def _normalise_service(service: str) -> str:
     """Map service name variations to the key used in services.json."""
     aliases = {
-        "ssh":          "ssh",
-        "ftp":          "ftp",
-        "http":         "http",
-        "http-proxy":   "http",
-        "https":        "http",
-        "ssl/http":     "http",
-        "upnp":         "upnp",
-        "ssdp":         "upnp",
-        "mysql":        "mysql",
-        "microsoft-ds": "microsoft-ds",
-        "netbios-ssn":  "microsoft-ds",
-        "smb":          "microsoft-ds",
-        "domain":       "domain",
-        "dns":          "domain",
-        "telnet":       "telnet",
-        "ms-wbt-server":"rdp",
-        "rdp":          "rdp",
-        "redis":        "redis",
-        "mongodb":      "mongodb",
-        "mongod":       "mongodb",
-        "tomcat":       "tomcat",
-        "http-tomcat":  "tomcat",
-        "weblogic":     "weblogic",
-        "samba":        "microsoft-ds",
-        "ms-sql-s":     "mssql",
-        "mssql":        "mssql",
-        "docker":       "docker",
-        "postgresql":   "postgresql",
-        "postgres":     "postgresql",
+        # SSH
+        "ssh":              "ssh",
+        "ssh-hostkey":      "ssh",
+        # FTP
+        "ftp":              "ftp",
+        "ftp-data":         "ftp",
+        "ftps":             "ftp",
+        "sftp":             "ftp",
+        # HTTP / HTTPS
+        "http":             "http",
+        "http-proxy":       "http",
+        "https":            "http",
+        "ssl/http":         "http",
+        "http-alt":         "http",
+        "https-alt":        "http",
+        "http-mgmt":        "http",
+        "ssl/https":        "http",
+        "http?":            "http",
+        # UPnP / SSDP
+        "upnp":             "upnp",
+        "ssdp":             "upnp",
+        # SMB / NetBIOS / Samba
+        "microsoft-ds":     "microsoft-ds",
+        "netbios-ssn":      "microsoft-ds",
+        "smb":              "microsoft-ds",
+        "samba":            "microsoft-ds",
+        "netbios-ns":       "microsoft-ds",
+        "cifs":             "microsoft-ds",
+        # DNS
+        "domain":           "domain",
+        "dns":              "domain",
+        "mdns":             "domain",
+        # Telnet
+        "telnet":           "telnet",
+        # RDP
+        "ms-wbt-server":    "rdp",
+        "rdp":              "rdp",
+        # Databases
+        "mysql":            "mysql",
+        "mariadb":          "mysql",
+        "redis":            "redis",
+        "mongodb":          "mongodb",
+        "mongod":           "mongodb",
+        "mongodb-internal": "mongodb",
+        "postgresql":       "postgresql",
+        "postgres":         "postgresql",
+        "ms-sql-s":         "mssql",
+        "ms-sql-m":         "mssql",
+        "mssql":            "mssql",
+        "oracle":           "oracle",
+        "oracle-tns":       "oracle",
+        "cassandra":        "cassandra",
+        "cql":              "cassandra",
+        "elasticsearch":    "elasticsearch",
+        "memcached":        "memcached",
+        # Application servers
+        "tomcat":           "tomcat",
+        "http-tomcat":      "tomcat",
+        "ajp13":            "tomcat",
+        "weblogic":         "weblogic",
+        "jboss":            "jboss",
+        "jboss-remoting":   "jboss",
+        "docker":           "docker",
+        # SMTP / Mail
+        "smtp":             "smtp",
+        "smtps":            "smtp",
+        "smtp-submission":  "smtp",
+        "submission":       "smtp",
+        # IMAP / POP3
+        "imap":             "imap",
+        "imaps":            "imap",
+        "pop3":             "pop3",
+        "pop3s":            "pop3",
+        # SNMP
+        "snmp":             "snmp",
+        # LDAP
+        "ldap":             "ldap",
+        "ldaps":            "ldap",
+        "msrpc":            "rpc",
+        # VNC
+        "vnc":              "vnc",
+        "rfb":              "vnc",
+        "vnc-http":         "vnc",
+        # NFS / RPC
+        "nfs":              "nfs",
+        "sunrpc":           "rpc",
+        "rpcbind":          "rpc",
+        # Kubernetes / CI
+        "kubernetes":       "kubernetes",
+        "jenkins":          "jenkins",
+        "kafka":            "kafka",
+        "rabbitmq":         "rabbitmq",
+        "amqp":             "rabbitmq",
+        "zookeeper":        "zookeeper",
     }
     return aliases.get(service, service)
 
@@ -141,6 +216,9 @@ def _extract_product_version(finding) -> tuple:
 
     Looks in: title, description, raw_evidence
     Returns: (product_str, version_str) — both lowercase, may be empty string
+
+    Version extraction searches AFTER the matched product name to avoid
+    picking up port numbers or other numeric values that appear before it.
     """
     text = " ".join([
         finding.title or "",
@@ -148,48 +226,110 @@ def _extract_product_version(finding) -> tuple:
         finding.raw_evidence or "",
     ]).lower()
 
-    # Common patterns:
-    #   "dropbear sshd 2012.55"
-    #   "openssh 7.2p2"
-    #   "apache httpd 2.4.49"
-    #   "tp-link wap"
-    #   "mysql 5.7.32"
-
     product = ""
     version = ""
+    product_end = 0  # character position after product match — search version after this
 
-    # Product detection
+    # Product detection patterns — ordered: specific before generic
     product_patterns = [
-        (r"dropbear",           "dropbear"),
-        (r"openssh",            "openssh"),
-        (r"apache",             "apache"),
-        (r"nginx",              "nginx"),
-        (r"iis",                "iis"),
-        (r"tp.?link",           "tp-link"),
-        (r"vsftpd",             "vsftpd"),
-        (r"proftpd",            "proftpd"),
-        (r"portable sdk.*upnp", "portable sdk for upnp"),
-        (r"mysql",              "mysql"),
-        (r"mariadb",            "mysql"),
-        (r"redis",              "redis"),
-        (r"mongodb",            "mongodb"),
-        (r"tomcat",             "tomcat"),
-        (r"weblogic",           "weblogic"),
-        (r"samba",              "samba"),
-        (r"microsoft sql server", "mssql"),
-        (r"mssql",              "mssql"),
-        (r"docker",             "docker"),
-        (r"postgresql",         "postgresql"),
+        # SSH
+        (r"dropbear",               "dropbear"),
+        (r"openssh",                "openssh"),
+        # FTP
+        (r"vsftpd",                 "vsftpd"),
+        (r"proftpd",                "proftpd"),
+        (r"pure-ftpd",              "pure-ftpd"),
+        (r"filezilla\s+server",     "filezilla"),
+        # HTTP servers
+        (r"apache\s+httpd",         "apache"),
+        (r"apache",                 "apache"),
+        (r"nginx",                  "nginx"),
+        (r"microsoft.iis",          "iis"),
+        (r"\biis\b",                "iis"),
+        (r"lighttpd",               "lighttpd"),
+        (r"caddy",                  "caddy"),
+        # Application servers
+        (r"apache\s+tomcat",        "tomcat"),
+        (r"tomcat",                 "tomcat"),
+        (r"weblogic",               "weblogic"),
+        (r"jboss",                  "jboss"),
+        (r"wildfly",                "jboss"),
+        (r"glassfish",              "glassfish"),
+        (r"jetty",                  "jetty"),
+        # CMS / frameworks
+        (r"wordpress",              "wordpress"),
+        (r"wp[\s/-]",               "wordpress"),
+        (r"drupal",                 "drupal"),
+        (r"joomla",                 "joomla"),
+        (r"struts",                 "struts"),
+        (r"spring\s+boot",          "spring"),
+        (r"laravel",                "laravel"),
+        (r"django",                 "django"),
+        # Databases
+        (r"mysql",                  "mysql"),
+        (r"mariadb",                "mysql"),
+        (r"postgresql",             "postgresql"),
+        (r"microsoft\s+sql\s+server", "mssql"),
+        (r"mssql",                  "mssql"),
+        (r"redis",                  "redis"),
+        (r"mongodb",                "mongodb"),
+        (r"oracle",                 "oracle"),
+        (r"cassandra",              "cassandra"),
+        (r"elasticsearch",          "elasticsearch"),
+        (r"memcached",              "memcached"),
+        # Network devices
+        (r"tp.?link",               "tp-link"),
+        (r"cisco\s+ios",            "cisco"),
+        (r"cisco",                  "cisco"),
+        (r"juniper",                "juniper"),
+        (r"fortinet",               "fortinet"),
+        (r"palo\s+alto",            "palo-alto"),
+        (r"netgear",                "netgear"),
+        (r"ubiquiti",               "ubiquiti"),
+        # UPnP / SSDP
+        (r"portable sdk.*upnp",     "portable sdk for upnp"),
+        (r"miniupnp",               "miniupnp"),
+        # Samba / SMB
+        (r"samba",                  "samba"),
+        # Docker / Kubernetes
+        (r"docker",                 "docker"),
+        (r"kubernetes",             "kubernetes"),
+        # Mail
+        (r"postfix",                "postfix"),
+        (r"exim",                   "exim"),
+        (r"sendmail",               "sendmail"),
+        (r"dovecot",                "dovecot"),
+        # CI / DevOps
+        (r"jenkins",                "jenkins"),
+        (r"gitlab",                 "gitlab"),
+        # Other
+        (r"openssl",                "openssl"),
+        (r"php",                    "php"),
+        (r"python",                 "python"),
+        (r"ruby",                   "ruby"),
+        (r"node",                   "nodejs"),
+        (r"vnc",                    "vnc"),
     ]
+
     for pattern, name in product_patterns:
-        if re.search(pattern, text):
+        m = re.search(pattern, text)
+        if m:
             product = name
+            product_end = m.end()
             break
 
-    # Version extraction — grab the first version-like string after the product
-    version_match = re.search(r"(\d+[\.\d]+(?:p\d+)?(?:\.\w+)?)", text)
+    # Version extraction — search AFTER the product match to avoid grabbing
+    # port numbers or other numerics that appear before the product name.
+    search_from = product_end if product_end else 0
+    version_match = re.search(
+        r"\b(\d+[\.\d]*(?:p\d+)?(?:[-_]\w+)?)\b",
+        text[search_from:],
+    )
     if version_match:
-        version = version_match.group(1)
+        candidate = version_match.group(1)
+        # Reject bare single integers (likely port numbers or counts)
+        if "." in candidate or re.search(r"p\d+", candidate):
+            version = candidate
 
     return product, version
 
