@@ -201,7 +201,27 @@ Supported tools wanted: OpenVAS, Burp Suite, Nessus, Nuclei.
 
 ---
 
+## Development
+
+Run the test suite from a project-local virtualenv:
+
+```bash
+python -m venv .venv
+./.venv/bin/pip install -e .
+./.venv/bin/pip install pytest
+./.venv/bin/python -m pytest
+```
+
+The GitHub Actions workflow runs the same suite on Python 3.10, 3.11, and 3.12,
+then smoke-tests the installed `vulnmind` entry point.
+
+---
+
 ## Changelog
+
+### v0.5.0 (in progress)
+- **Test suite and CI foundation** — added pytest coverage for matcher safeguards, parser fixtures, and mocked NVD enrichment/cache behavior.
+- **GitHub Actions CI** — runs pytest and a CLI version smoke test on Python 3.10, 3.11, and 3.12.
 
 ### v0.4.1
 - **Packaging fix for PyPI** — `setup.py` now declares `package_data` so the offline CVE knowledge base (`vulnmind/knowledge/services.json`) is bundled into the built wheel. Without this, `pip install vulnmind` would have crashed on first use.
