@@ -201,7 +201,34 @@ Supported tools wanted: OpenVAS, Burp Suite, Nessus, Nuclei.
 
 ---
 
+## Development
+
+Run the test suite from a project-local virtualenv:
+
+```bash
+python -m venv .venv
+./.venv/bin/pip install -e .
+./.venv/bin/pip install pytest
+./.venv/bin/python -m pytest
+```
+
+The GitHub Actions workflow runs the same suite on Python 3.10, 3.11, and 3.12,
+then smoke-tests the installed `vulnmind` entry point.
+
+---
+
 ## Changelog
+
+### v0.5.0-beta.1 (prerelease)
+- **Beta status** — first public prerelease snapshot for v0.5.0 work. This is not the stable release line; use v0.4.1 for stable installs.
+- **Test suite and CI foundation** — added pytest coverage for matcher safeguards, parser fixtures, and mocked NVD enrichment/cache behavior.
+- **GitHub Actions CI** — runs pytest and a CLI version smoke test on Python 3.10, 3.11, and 3.12.
+- **Development docs** — added local pytest setup instructions for contributors.
+
+### v0.4.1 (stable)
+- **Packaging fix for PyPI** — `setup.py` now declares `package_data` so the offline CVE knowledge base (`vulnmind/knowledge/services.json`) is bundled into the built wheel. Without this, `pip install vulnmind` would have crashed on first use.
+- License metadata added: `license="MIT"` + MIT classifier so PyPI displays the licence correctly.
+- No behavioural changes versus v0.4.0.
 
 ### v0.4.0
 - **`vulnmind scan <target>` subcommand** — runs nmap for you and feeds the XML straight into the existing analyze pipeline. Defaults to `-sV -sC --top-ports 1000`; accepts `-p/--ports` for custom port ranges and `--nmap-args "..."` for arbitrary pass-through flags (shell-quoted). Prints an authorisation notice on every text-mode run and streams nmap's progress to the terminal so you see the scan as it happens. Temp XML is cleaned up automatically. Fails loudly with install instructions if `nmap` is not on PATH.
