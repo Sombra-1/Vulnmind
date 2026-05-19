@@ -203,6 +203,11 @@ Supported tools wanted: OpenVAS, Burp Suite, Nessus, Nuclei.
 
 ## Changelog
 
+### v0.4.1
+- **Packaging fix for PyPI** — `setup.py` now declares `package_data` so the offline CVE knowledge base (`vulnmind/knowledge/services.json`) is bundled into the built wheel. Without this, `pip install vulnmind` would have crashed on first use.
+- License metadata added: `license="MIT"` + MIT classifier so PyPI displays the licence correctly.
+- No behavioural changes versus v0.4.0.
+
 ### v0.4.0
 - **`vulnmind scan <target>` subcommand** — runs nmap for you and feeds the XML straight into the existing analyze pipeline. Defaults to `-sV -sC --top-ports 1000`; accepts `-p/--ports` for custom port ranges and `--nmap-args "..."` for arbitrary pass-through flags (shell-quoted). Prints an authorisation notice on every text-mode run and streams nmap's progress to the terminal so you see the scan as it happens. Temp XML is cleaned up automatically. Fails loudly with install instructions if `nmap` is not on PATH.
 - **Pipeline refactor** — `analyze` and `scan` now share a single internal pipeline function, so any future change to parse → match → NVD → AI → render applies to both paths.
