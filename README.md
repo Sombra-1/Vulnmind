@@ -219,11 +219,13 @@ then smoke-tests the installed `vulnmind` entry point.
 
 ## Changelog
 
-### v0.5.0 (in progress)
+### v0.5.0-beta.1 (prerelease)
+- **Beta status** — first public prerelease snapshot for v0.5.0 work. This is not the stable release line; use v0.4.1 for stable installs.
 - **Test suite and CI foundation** — added pytest coverage for matcher safeguards, parser fixtures, and mocked NVD enrichment/cache behavior.
 - **GitHub Actions CI** — runs pytest and a CLI version smoke test on Python 3.10, 3.11, and 3.12.
+- **Development docs** — added local pytest setup instructions for contributors.
 
-### v0.4.1
+### v0.4.1 (stable)
 - **Packaging fix for PyPI** — `setup.py` now declares `package_data` so the offline CVE knowledge base (`vulnmind/knowledge/services.json`) is bundled into the built wheel. Without this, `pip install vulnmind` would have crashed on first use.
 - License metadata added: `license="MIT"` + MIT classifier so PyPI displays the licence correctly.
 - No behavioural changes versus v0.4.0.
