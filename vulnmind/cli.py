@@ -39,7 +39,7 @@ def cli(ctx):
     """
     VulnMind — Security scan analyzer.
 
-    Parse and analyze output from nmap, nikto, and other security tools.
+    Parse and analyze output from nmap, Nuclei, nikto, and other security tools.
     Get structured findings, CVE matches, priority rankings, and reports.
 
     \b
@@ -102,6 +102,7 @@ def analyze(files: tuple, report: str | None, output: str, enrich: bool, deep: b
     Supported formats:
       nmap -oX scan.xml    (recommended)
       nmap -oN scan.nmap   (text output)
+      nuclei -jsonl -o nuclei.jsonl
       nikto -o scan.txt    (nikto output)
 
     \b

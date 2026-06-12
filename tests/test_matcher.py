@@ -100,3 +100,45 @@ def test_equivalent_products_match_version_before_entries():
 
     assert confidence == "strong"
     assert match["product"] == "mysql"
+
+
+def test_smb_windows_product_match_is_not_marked_weak_when_cve_is_parser_reported():
+    finding = make_finding(
+        service="microsoft-ds",
+        port=445,
+        title="smb-vuln-ms17-010 on target.local:445",
+        description="NSE script 'smb-vuln-ms17-010' flagged target.local:445/tcp.",
+        raw_evidence=(
+            "Script: smb-vuln-ms17-010\n"
+            "product: Windows 7\n"
+            "Output:\nVULNERABLE: CVE:CVE-2017-0144"
+        ),
+        cve_ids=["CVE-2017-0144"],
+    )
+
+    enriched = match_finding(finding)
+
+    assert enriched.priority == "high"
+    assert enriched.cve_ids == ["CVE-2017-0144"]
+    assert enriched.false_positive_likelihood == "low"
+    assert "scanner output reported cve" in enriched.false_positive_reason.lower()
+
+
+def test_nuclei_findings_do_not_merge_adjacent_kb_cves():
+    finding = make_finding(
+        source_tool="nuclei",
+        title="Apache Path Traversal and File Disclosure",
+        description="Apache HTTP Server 2.4.49 path traversal and file disclosure.",
+        raw_evidence=(
+            "template-id: cves/2021/CVE-2021-41773\n"
+            "classification.cve-id: CVE-2021-41773"
+        ),
+        cve_ids=["CVE-2021-41773"],
+        priority="critical",
+    )
+
+    enriched = match_finding(finding)
+
+    assert enriched.cve_ids == ["CVE-2021-41773"]
+    assert "CVE-2021-42013" not in enriched.cve_ids
+    assert enriched.remediation

@@ -42,7 +42,7 @@ class Finding:
     so we skip the duplicate when building the results list."""
 
     source_tool: str
-    """Which tool produced this: 'nmap', 'nikto', 'metasploit'"""
+    """Which tool produced this: 'nmap', 'nuclei', 'nikto', 'metasploit'"""
 
     source_file: str
     """Absolute path to the file this came from"""

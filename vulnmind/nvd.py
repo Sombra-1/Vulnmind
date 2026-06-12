@@ -140,7 +140,7 @@ def _fetch_cve(cve_id: str, max_retries: int = 3) -> Optional[dict]:
                 params={"cveId": cve_id},
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": "vulnmind/0.4.1 (+https://github.com/Sombra-1/vulnmind)",
+                    "User-Agent": "vulnmind/0.5.0 (+https://github.com/Sombra-1/vulnmind)",
                 },
                 timeout=REQUEST_TIMEOUT,
             )

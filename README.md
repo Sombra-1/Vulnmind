@@ -1,6 +1,13 @@
 # VulnMind
 
-Security scan analyzer for pentesters. Parse nmap, nikto, and Metasploit console output into structured findings with CVE matches, live CVSS scores from NVD, priority ratings, remediation advice, suggested commands, and Metasploit modules — instantly, mostly offline, no API keys required by default.
+[![CI](https://github.com/Sombra-1/vulnmind/actions/workflows/ci.yml/badge.svg)](https://github.com/Sombra-1/vulnmind/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/vulnmind.svg)](https://pypi.org/project/vulnmind/)
+[![Python](https://img.shields.io/pypi/pyversions/vulnmind.svg)](https://pypi.org/project/vulnmind/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+Security scan analyzer for pentesters. Parse nmap, Nuclei, nikto, and Metasploit console output into structured findings with CVE matches, live CVSS scores from NVD, priority ratings, remediation advice, suggested commands, and Metasploit modules — instantly, mostly offline, no API keys required by default.
+
+VulnMind is not a scanner replacement. It turns scanner output into prioritized, explainable findings you can review, pipe to JSON, or export as a PDF report.
 
 ```
 vulnmind analyze scan.xml
@@ -67,7 +74,14 @@ nikto -h 192.168.1.10 -o nikto.txt
 vulnmind analyze nikto.txt
 
 # multiple files at once
-vulnmind analyze scan.xml nikto.txt
+vulnmind analyze scan.xml nuclei.jsonl nikto.txt
+```
+
+### Nuclei JSONL *(new in v0.5.0)*
+
+```bash
+nuclei -u https://target.local -jsonl -o nuclei.jsonl
+vulnmind analyze nuclei.jsonl
 ```
 
 ### Scan — let VulnMind run nmap for you *(new in v0.4.0)*
@@ -132,6 +146,7 @@ vulnmind analyze scan.xml --format json > findings.json
 | nmap | XML | `-oX scan.xml` |
 | nmap | Text | `-oN scan.txt` |
 | nmap | All formats | `-oA scan` |
+| Nuclei | JSONL | `-jsonl -o nuclei.jsonl` |
 | nikto | Text | `-o scan.txt` |
 | Metasploit | Console log | `spool console.log` inside msfconsole |
 
@@ -141,9 +156,10 @@ VulnMind auto-detects the format — no need to specify it.
 
 ## Features
 
-- Parse **nmap** XML and text output, **nikto** output, **Metasploit** console logs
+- Parse **nmap** XML and text output, **Nuclei** JSONL, **nikto** output, **Metasploit** console logs
 - Offline CVE knowledge base — instant, no internet required
 - **Live NVD lookups** in `--deep` mode — official CVSS scores and descriptions from nvd.nist.gov
+- Trust scanner-reported CVEs from Nuclei classification metadata without inventing CVEs from template names
 - 50+ service types detected (ssh, ftp, http, smb, rdp, mysql, redis, mongodb, elasticsearch, smtp, ldap, snmp, vnc, docker, kubernetes, jenkins, and more)
 - Accurate product & version matching — strong vs weak match confidence, no more false-positive CVE merges from unrelated vendors
 - Priority ratings with explanation — know *why* something is critical, not just *that* it is
@@ -197,7 +213,7 @@ class MyParser(BaseParser):
         ...
 ```
 
-Supported tools wanted: OpenVAS, Burp Suite, Nessus, Nuclei.
+Supported tools wanted: OpenVAS, Burp Suite, Nessus.
 
 ---
 
@@ -208,7 +224,7 @@ Run the test suite from a project-local virtualenv:
 ```bash
 python -m venv .venv
 ./.venv/bin/pip install -e .
-./.venv/bin/pip install pytest
+./.venv/bin/pip install -r dev-requirements.txt
 ./.venv/bin/python -m pytest
 ```
 
@@ -219,11 +235,12 @@ then smoke-tests the installed `vulnmind` entry point.
 
 ## Changelog
 
-### v0.5.0-beta.1 (prerelease)
-- **Beta status** — first public prerelease snapshot for v0.5.0 work. This is not the stable release line; use v0.4.1 for stable installs.
-- **Test suite and CI foundation** — added pytest coverage for matcher safeguards, parser fixtures, and mocked NVD enrichment/cache behavior.
-- **GitHub Actions CI** — runs pytest and a CLI version smoke test on Python 3.10, 3.11, and 3.12.
-- **Development docs** — added local pytest setup instructions for contributors.
+### v0.5.0
+- **Nuclei JSONL support** — parses Nuclei findings from `-jsonl` output, including severity, host/port, matched URL, extracted results, reproduction curl command, CVSS score, and CVEs from `info.classification.cve-id`.
+- **CVE accuracy guard** — Nuclei parser trusts explicit classification CVEs but does not invent CVEs from template IDs or names.
+- **Matcher confidence polish** — scanner-reported CVEs that confirm a weak SMB KB fallback are treated as lower false-positive risk without merging unrelated fallback CVEs.
+- **Test suite and CI foundation** — pytest coverage for matcher safeguards, nmap/nikto/Metasploit/Nuclei parser fixtures, mocked NVD cache/fetch/rate-limit behavior, and GitHub Actions on Python 3.10, 3.11, and 3.12.
+- **Development docs** — added `dev-requirements.txt` and local pytest setup instructions for contributors.
 
 ### v0.4.1 (stable)
 - **Packaging fix for PyPI** — `setup.py` now declares `package_data` so the offline CVE knowledge base (`vulnmind/knowledge/services.json`) is bundled into the built wheel. Without this, `pip install vulnmind` would have crashed on first use.

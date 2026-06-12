@@ -83,9 +83,12 @@ def match_finding(finding) -> object:
     #   - Weak match (no product match): do NOT add KB CVEs — would be
     #     a false positive. Only use the entry for generic guidance.
     existing_cves = set(finding.cve_ids or [])
-    if confidence == "strong":
-        new_cves = set(match.get("cves", []))
-        merged_cves = list(existing_cves | new_cves)
+    kb_cves = set(match.get("cves", []))
+    # Nuclei templates carry explicit classification CVEs. Keep that scanner
+    # CVE set conservative instead of adding adjacent KB CVEs to the finding.
+    allow_kb_cve_merge = confidence == "strong" and finding.source_tool != "nuclei"
+    if allow_kb_cve_merge:
+        merged_cves = list(existing_cves | kb_cves)
     else:
         merged_cves = list(existing_cves)
 
@@ -130,14 +133,19 @@ def match_finding(finding) -> object:
     # Remediation — use KB if it has one
     remediation = finding.remediation or match.get("remediation")
 
-    # False-positive assessment — strong match = low, weak match = medium
+    # False-positive assessment — strong match = low, weak match = medium.
+    # If a weak service fallback is confirmed by a scanner-reported CVE that
+    # also exists in that KB entry, keep the CVE but do not add unrelated KB CVEs.
+    scanner_confirmed_kb_cve = bool(existing_cves & kb_cves)
     fp_likelihood = finding.false_positive_likelihood
     if not fp_likelihood:
-        fp_likelihood = "low" if confidence == "strong" else "medium"
+        fp_likelihood = "low" if confidence == "strong" or scanner_confirmed_kb_cve else "medium"
     fp_reason = finding.false_positive_reason
     if not fp_reason:
         if confidence == "strong":
             fp_reason = "Matched product and/or version against known vulnerable entry."
+        elif scanner_confirmed_kb_cve:
+            fp_reason = "Scanner output reported CVE ID(s); KB match was service-level only."
         else:
             fp_reason = "Service-level match only — specific product/version not confirmed."
 
