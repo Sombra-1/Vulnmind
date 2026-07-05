@@ -102,6 +102,42 @@ def test_equivalent_products_match_version_before_entries():
     assert match["product"] == "mysql"
 
 
+def test_exact_version_match_does_not_overmatch_prefix_versions():
+    entries = [
+        {
+            "product": "apache",
+            "version_match": "2.4.49",
+            "priority": "critical",
+            "cves": ["CVE-2021-41773"],
+        },
+        {
+            "product": "apache",
+            "priority": "high",
+            "cves": ["CVE-2011-3192"],
+        },
+    ]
+
+    match, confidence = _find_best_match(entries, product="apache", version="2.4.490")
+
+    assert confidence == "strong"
+    assert match["cves"] == ["CVE-2011-3192"]
+
+
+def test_http_tomcat_product_uses_tomcat_service_guidance():
+    finding = make_finding(
+        title="Open port 8080/tcp - Apache Tomcat 9.0.31",
+        description="Port 8080/tcp is open on target.local, running http Apache Tomcat 9.0.31.",
+        raw_evidence="service: http\nproduct: Apache Tomcat\nversion: 9.0.31",
+        cve_ids=[],
+    )
+
+    enriched = match_finding(finding)
+
+    assert enriched.priority == "high"
+    assert "Tomcat" in enriched.priority_reason
+    assert enriched.false_positive_likelihood == "medium"
+
+
 def test_smb_windows_product_match_is_not_marked_weak_when_cve_is_parser_reported():
     finding = make_finding(
         service="microsoft-ds",
