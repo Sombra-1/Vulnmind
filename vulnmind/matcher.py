@@ -63,20 +63,16 @@ def match_finding(finding) -> object:
     # Normalise service aliases
     service = _normalise_service(service)
 
-    entries = knowledge.get(service)
-    if not entries:
-        return finding
-
     # Extract product and version from the finding description/title/evidence
     product, version = _extract_product_version(finding)
 
-    # Find the best matching entry — returns (entry, confidence)
+    # Find the best matching entry — returns (entry, confidence, service)
     # confidence is "strong" (product+version) or "weak" (product-only / service fallback)
-    match_result = _find_best_match(entries, product, version)
+    match_result = _find_best_service_match(knowledge, service, product, version)
     if not match_result:
         return finding
 
-    match, confidence = match_result
+    match, confidence, matched_service = match_result
 
     # CVE merging rules:
     #   - Strong match: merge KB CVEs with parser CVEs
@@ -123,7 +119,7 @@ def match_finding(finding) -> object:
             kb_priority_reason = f"Matched '{match.get('product')}' in offline KB."
         else:
             kb_priority_reason = (
-                f"Service '{service}' exposed — general risk guidance from KB."
+                f"Service '{matched_service}' exposed — general risk guidance from KB."
             )
 
     # Description — NEVER overwrite parser's description. Parser built it from
@@ -273,6 +269,23 @@ def _normalise_service(service: str) -> str:
     return aliases.get(service, service)
 
 
+_PRODUCT_SERVICE_ALIASES = {
+    "tomcat": "tomcat",
+    "jboss": "jboss",
+    "weblogic": "weblogic",
+    "jenkins": "jenkins",
+    "elasticsearch": "elasticsearch",
+    "mongodb": "mongodb",
+    "redis": "redis",
+    "mysql": "mysql",
+    "postgresql": "postgresql",
+    "mssql": "mssql",
+    "oracle": "oracle",
+    "docker": "docker",
+    "kubernetes": "kubernetes",
+}
+
+
 # Product detection patterns — ordered: specific before generic
 _PRODUCT_PATTERNS = [
     # SSH
@@ -283,16 +296,6 @@ _PRODUCT_PATTERNS = [
     (r"proftpd",                "proftpd"),
     (r"pure-ftpd",              "pure-ftpd"),
     (r"filezilla\s+server",     "filezilla"),
-    # HTTP servers
-    (r"apache\s+httpd",         "apache"),
-    (r"apache\s+http",          "apache"),
-    (r"apache(?=/\d)",          "apache"),
-    (r"\bapache\b",             "apache"),
-    (r"nginx",                  "nginx"),
-    (r"microsoft.iis",          "iis"),
-    (r"\biis\b",                "iis"),
-    (r"lighttpd",               "lighttpd"),
-    (r"caddy",                  "caddy"),
     # Application servers
     (r"apache\s+tomcat",        "tomcat"),
     (r"tomcat",                 "tomcat"),
@@ -310,6 +313,16 @@ _PRODUCT_PATTERNS = [
     (r"spring\s+boot",          "spring"),
     (r"laravel",                "laravel"),
     (r"django",                 "django"),
+    # HTTP servers
+    (r"apache\s+httpd",         "apache"),
+    (r"apache\s+http",          "apache"),
+    (r"apache(?=/\d)",          "apache"),
+    (r"\bapache\b",             "apache"),
+    (r"nginx",                  "nginx"),
+    (r"microsoft.iis",          "iis"),
+    (r"\biis\b",                "iis"),
+    (r"lighttpd",               "lighttpd"),
+    (r"caddy",                  "caddy"),
     # Databases
     (r"mysql",                  "mysql"),
     (r"mariadb",                "mysql"),
@@ -465,7 +478,7 @@ def _find_best_match(entries: list, product: str, version: str):
         # Product matches. Now check version constraints.
 
         # 1. Exact version prefix match — highest confidence
-        if version_match and version and version.startswith(version_match):
+        if version_match and version and _version_matches(version, version_match):
             return (entry, "strong")
 
         # 2. Version-before match
@@ -487,6 +500,52 @@ def _find_best_match(entries: list, product: str, version: str):
     if fallback:
         return (fallback, "weak")
     return None
+
+
+def _find_best_service_match(knowledge: dict, service: str, product: str, version: str):
+    """
+    Find the best KB entry across the scanner service and product-derived service.
+
+    Some tools report application servers as generic HTTP services. For example,
+    nmap commonly emits service=http, product="Apache Tomcat". Try a Tomcat KB
+    match before settling for the generic HTTP fallback.
+    """
+    candidates = []
+    product_service = _PRODUCT_SERVICE_ALIASES.get(product)
+    for candidate in (product_service, service):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    fallback_result = None
+    for candidate in candidates:
+        entries = knowledge.get(candidate)
+        if not entries:
+            continue
+        result = _find_best_match(entries, product, version)
+        if not result:
+            continue
+        entry, confidence = result
+        if confidence == "strong":
+            return entry, confidence, candidate
+        if fallback_result is None:
+            fallback_result = (entry, confidence, candidate)
+
+    return fallback_result
+
+
+def _version_matches(version: str, expected: str) -> bool:
+    """
+    Return True for an exact version token or bounded package suffix.
+
+    This allows "2.4.49-ubuntu1" to match "2.4.49" but prevents
+    "2.4.490" from matching "2.4.49".
+    """
+    if version == expected:
+        return True
+    if not version.startswith(expected):
+        return False
+    next_char = version[len(expected):len(expected) + 1]
+    return next_char in {"-", "_", "+", "~"}
 
 
 def _product_equivalent(p1: str, p2: str) -> bool:
