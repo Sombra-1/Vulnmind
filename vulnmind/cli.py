@@ -4,7 +4,9 @@ cli.py — Entry point for VulnMind.
 Command structure:
   vulnmind analyze <files> [--enrich] [--deep] [--report pdf] [--output path] [--format text|json]
   vulnmind scan <target>   [-p ports] [--nmap-args "..."] [--enrich] [--deep] [--report pdf] [--output path] [--format text|json]
+  vulnmind update [--check-only]
   vulnmind config set-key <api-key>
+  vulnmind config set-update-checks <on|off>
   vulnmind config show
   vulnmind config clear
 """
@@ -26,6 +28,14 @@ console = Console()
 def print_banner():
     """Print the VulnMind + Sombra-1 banner. Suppressed in JSON mode."""
     console.print(render_banner(use_color=True))
+
+
+def _print_error(message: str, output_format: str) -> None:
+    """Keep machine-readable stdout clean while retaining useful diagnostics."""
+    if output_format == "json":
+        click.echo(message, err=True)
+    else:
+        console.print(message)
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +95,7 @@ def cli(ctx):
     "--deep",
     is_flag=True,
     default=False,
-    help="Look up each CVE in NVD for official CVSS scores + more evidence to AI.",
+    help="Refresh NVD, CISA KEV, and ExploitDB intelligence for associated CVEs.",
 )
 @click.option(
     "--format", "output_format",
@@ -164,7 +174,7 @@ def analyze(files: tuple, report: str | None, output: str, enrich: bool, deep: b
     "--deep",
     is_flag=True,
     default=False,
-    help="Look up each CVE in NVD for official CVSS scores + more evidence to AI.",
+    help="Refresh NVD, CISA KEV, and ExploitDB intelligence for associated CVEs.",
 )
 @click.option(
     "--format", "output_format",
@@ -214,10 +224,12 @@ def scan(
         ))
 
     if not nmap_available():
-        console.print(
-            "[red]nmap binary not found on PATH.[/red]\n"
-            "Install with:  [bold]sudo pacman -S nmap[/bold] (Arch) "
-            "or [bold]sudo apt install nmap[/bold] (Debian/Kali)."
+        _print_error(
+            (
+                "nmap binary not found on PATH. Install with: sudo pacman -S "
+                "nmap (Arch) or sudo apt install nmap (Debian/Kali)."
+            ),
+            output_format,
         )
         sys.exit(1)
 
@@ -235,10 +247,10 @@ def scan(
             quiet=quiet,
         )
     except ScannerError as e:
-        console.print(f"[red]{e}[/red]")
+        _print_error(str(e), output_format)
         sys.exit(1)
     except KeyboardInterrupt:
-        console.print("\n[yellow]Scan interrupted.[/yellow]")
+        _print_error("Scan interrupted.", output_format)
         sys.exit(130)
 
     try:
@@ -260,6 +272,77 @@ def scan(
 
 
 # ---------------------------------------------------------------------------
+# update command
+# ---------------------------------------------------------------------------
+
+@cli.command("update")
+@click.option(
+    "--check-only",
+    is_flag=True,
+    help="Check for a release without changing the current installation.",
+)
+def update_command(check_only: bool):
+    """Check for and install the latest VulnMind GitHub release.
+
+    Pip and pipx installations can be updated directly. Source checkouts and
+    system-package installations receive commands appropriate to their install
+    method instead of being modified behind the package manager's back.
+    """
+    from vulnmind.updater import (
+        RELEASES_URL,
+        check_for_update,
+        detect_install_method,
+        get_update_plan,
+        perform_update,
+    )
+
+    with console.status("[bold]Checking GitHub releases...[/bold]"):
+        status = check_for_update(force=True)
+
+    if status is None:
+        console.print(
+            "[yellow]Could not check for updates.[/yellow] "
+            f"Visit {RELEASES_URL} to check manually."
+        )
+        raise click.exceptions.Exit(1)
+
+    latest = status["latest"]
+    if not status.get("newer"):
+        console.print(
+            f"[green]VulnMind {__version__} is up to date.[/green] "
+            f"Latest release: {latest}."
+        )
+        return
+
+    console.print(
+        f"[yellow]Update available:[/yellow] {__version__} → [bold]{latest}[/bold]"
+    )
+    if check_only:
+        console.print(RELEASES_URL)
+        return
+
+    method = detect_install_method()
+    plan = get_update_plan(method, latest_version=latest)
+    if not plan.can_auto_update:
+        console.print(Panel(
+            plan.instructions,
+            title=f"Manual update required ({method})",
+            border_style="yellow",
+        ))
+        raise click.exceptions.Exit(1)
+
+    console.print(f"[dim]{plan.instructions}[/dim]")
+    with console.status("[bold]Installing update...[/bold]"):
+        result = perform_update(method, latest_version=latest)
+
+    if result.success:
+        console.print(f"[green]{result.message}[/green]")
+        return
+    console.print(f"[red]{result.message}[/red]")
+    raise click.exceptions.Exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Shared analyze/scan pipeline
 # ---------------------------------------------------------------------------
 
@@ -273,7 +356,7 @@ def _run_pipeline(
     show_banner: bool,
 ) -> None:
     """
-    Parse → match → [NVD] → [AI] → render.
+    Parse → match → [NVD] → exploit intelligence → [AI] → render.
 
     Used by both `analyze` (user-supplied files) and `scan` (one temp XML file
     produced by nmap).
@@ -281,36 +364,45 @@ def _run_pipeline(
     if show_banner and output_format == "text":
         print_banner()
 
-    # Start update check in background — overlaps with parsing, costs nothing
-    if output_format == "text":
+    cfg = Config.load()
+
+    # Text output can check for releases unless the user opts out. Parsing and
+    # matching overlap the bounded request; JSON mode never performs this check.
+    update_check_started = (
+        output_format == "text" and cfg.update_checks_enabled
+    )
+    if update_check_started:
         from vulnmind.updater import start_check
         start_check()
 
-    cfg = Config.load()
-
     # Only check for API key if --enrich was requested
     if enrich and not cfg.groq_api_key:
-        console.print(Panel(
-            "No API key configured.\n\n"
-            "Get a free key at [bold]console.groq.com[/bold] then run:\n\n"
-            "  [bold]vulnmind config set-key <your-key>[/bold]",
-            title="[bold red]Setup Required[/bold red]",
-            border_style="red",
-        ))
+        if output_format == "json":
+            _print_error(
+                "No API key configured. Run: vulnmind config set-key <your-key>",
+                output_format,
+            )
+        else:
+            console.print(Panel(
+                "No API key configured.\n\n"
+                "Get a free key at [bold]console.groq.com[/bold] then run:\n\n"
+                "  [bold]vulnmind config set-key <your-key>[/bold]",
+                title="[bold red]Setup Required[/bold red]",
+                border_style="red",
+            ))
         sys.exit(1)
 
     from vulnmind.parsers import load_files
     from vulnmind.matcher import match_findings
 
     # --- Parse ---
-    all_findings = []
-    for file_path in file_paths:
-        try:
-            findings = load_files([file_path])
-            all_findings.extend(findings)
-        except Exception as e:
-            console.print(f"[red]Error parsing {file_path.name}:[/red] {e}")
-            sys.exit(1)
+    try:
+        # Load the complete set in one call so cross-file IDs share one dedupe
+        # set. Calling load_files once per input silently reset deduplication.
+        all_findings = load_files(file_paths)
+    except Exception as e:
+        _print_error(f"Error parsing scanner input: {e}", output_format)
+        sys.exit(1)
 
     if not all_findings:
         if output_format == "json":
@@ -326,6 +418,8 @@ def _run_pipeline(
                 title="[yellow]No Findings[/yellow]",
                 border_style="yellow",
             ))
+            if update_check_started:
+                _show_update_notice()
         return
 
     # --- Knowledge base match (always runs, offline) ---
@@ -335,10 +429,22 @@ def _run_pipeline(
     if deep:
         findings = _nvd_enrich(findings, output_format)
 
+    # --- Exploit intelligence (cached offline; network refresh in --deep) ---
+    findings = _exploit_intel_enrich(
+        findings,
+        output_format=output_format,
+        allow_network=deep,
+    )
+
     # --- AI enrich if requested ---
     if enrich:
         from vulnmind.ai import enrich_findings
-        findings = enrich_findings(findings, cfg, deep=deep)
+        findings = enrich_findings(
+            findings,
+            cfg,
+            deep=deep,
+            quiet=output_format == "json",
+        )
 
     # --- JSON output ---
     if output_format == "json":
@@ -360,11 +466,17 @@ def _run_pipeline(
         console.print(f"\n[green]Report saved:[/green] {output}")
 
     # --- Update notice (shown last, after everything else) ---
-    if output_format == "text":
-        from vulnmind.updater import get_notice
-        notice = get_notice()
-        if notice:
-            console.print(notice)
+    if update_check_started:
+        _show_update_notice()
+
+
+def _show_update_notice() -> None:
+    """Render a completed release check without affecting structured output."""
+    from vulnmind.updater import get_notice
+
+    notice = get_notice()
+    if notice:
+        console.print(notice)
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +524,27 @@ def _nvd_enrich(findings: list, output_format: str) -> list:
         return enrich_with_nvd(findings, progress_callback=_cb)
 
 
+def _exploit_intel_enrich(
+    findings: list,
+    *,
+    output_format: str,
+    allow_network: bool,
+) -> list:
+    """Apply offline caches and optionally refresh KEV/ExploitDB data."""
+    from vulnmind.enrichers import enrich_with_exploit_intelligence
+
+    if output_format == "json" or not allow_network:
+        return enrich_with_exploit_intelligence(
+            findings,
+            allow_network=allow_network,
+        )
+
+    with console.status(
+        "[bold]Refreshing CISA KEV and ExploitDB intelligence...[/bold]"
+    ):
+        return enrich_with_exploit_intelligence(findings, allow_network=True)
+
+
 # ---------------------------------------------------------------------------
 # config command group
 # ---------------------------------------------------------------------------
@@ -435,6 +568,16 @@ def config_set_key(api_key: str):
     cfg.set("groq_api_key", api_key)
     cfg.save()
     console.print(f"[green]API key saved.[/green] ({api_key[:8]}...)")
+
+
+@config.command("set-update-checks")
+@click.argument("state", type=click.Choice(["on", "off"]))
+def config_set_update_checks(state: str):
+    """Enable or disable release checks during normal text-mode runs."""
+    cfg = Config.load()
+    cfg.set("update_checks", state == "on")
+    cfg.save()
+    console.print(f"[green]Automatic update checks {state}.[/green]")
 
 
 @config.command("clear")
@@ -513,12 +656,24 @@ def display_finding_panel(finding):
     port_str    = f":{finding.port}" if finding.port else ""
     service_str = f"  [{finding.service}]" if finding.service else ""
     lines.append(f"[dim]Target:[/dim] [bold]{finding.host}{port_str}[/bold]{service_str}")
+    confidence = (finding.confidence or "weak").replace("-", " ").title()
+    lines.append(f"[dim]Confidence:[/dim] [bold]{confidence}[/bold]")
 
     if finding.cve_ids:
         lines.append(f"[dim]CVEs:[/dim]   [cyan]{', '.join(finding.cve_ids)}[/cyan]")
 
     if finding.cvss_score is not None:
         lines.append(f"[dim]CVSS:[/dim]   [bold]{finding.cvss_score:.1f}[/bold]")
+
+    intel_tags = []
+    if finding.actively_exploited:
+        intel_tags.append("[bold red]Known Exploited CVE — CISA KEV[/bold red]")
+    if finding.exploit_available:
+        intel_tags.append("[yellow]Public Exploit Reference[/yellow]")
+    if finding.metasploit_available:
+        intel_tags.append("[red]Metasploit Module[/red]")
+    if intel_tags:
+        lines.append(f"[dim]Threat intel:[/dim] {'  ·  '.join(intel_tags)}")
 
     if finding.priority_reason:
         lines.append(f"[dim]Why {finding.priority or 'this priority'}:[/dim] [dim italic]{finding.priority_reason}[/dim italic]")

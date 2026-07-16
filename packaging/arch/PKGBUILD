@@ -1,7 +1,7 @@
 pkgname=vulnmind
-pkgver=0.5.0
+pkgver=0.6.0
 pkgrel=1
-pkgdesc="CLI security scan analyzer. Parses nmap/Nuclei/nikto/Metasploit output, matches CVEs offline, optional live NVD lookup."
+pkgdesc="CLI security scan analyzer with offline CVE matching and optional NVD, CISA KEV, and ExploitDB intelligence."
 arch=('any')
 url="https://github.com/Sombra-1/vulnmind"
 license=('MIT')

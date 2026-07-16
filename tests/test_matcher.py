@@ -1,4 +1,8 @@
+import json
+import re
+
 from vulnmind.matcher import (
+    _KNOWLEDGE_FILE,
     _extract_product_version,
     _find_best_match,
     _version_less_than,
@@ -32,11 +36,12 @@ def test_strong_match_merges_cves_and_preserves_parser_description():
     enriched = match_finding(finding)
 
     assert enriched.priority == "critical"
-    assert set(enriched.cve_ids) == {"CVE-2021-41773", "CVE-2021-42013"}
+    assert enriched.cve_ids == ["CVE-2021-41773"]
     assert enriched.description == "Parser-built scan evidence must be preserved."
     assert enriched.suggested_commands
     assert all("192.0.2.10" in command for command in enriched.suggested_commands)
     assert enriched.false_positive_likelihood == "low"
+    assert enriched.confidence == "scanner-reported"
 
 
 def test_weak_service_fallback_does_not_add_kb_cves_or_commands():
@@ -53,6 +58,32 @@ def test_weak_service_fallback_does_not_add_kb_cves_or_commands():
     assert enriched.suggested_commands == []
     assert enriched.metasploit_modules == []
     assert enriched.false_positive_likelihood == "medium"
+    assert enriched.confidence == "scanner-reported"
+    assert enriched.priority is None
+    assert enriched.priority_reason is None
+    assert enriched.remediation is None
+
+
+def test_product_version_match_without_scanner_cve_is_strong_confidence():
+    finding = make_finding(cve_ids=[])
+
+    enriched = match_finding(finding)
+
+    assert enriched.confidence == "strong"
+    assert enriched.cve_ids
+
+
+def test_no_service_match_keeps_stable_weak_confidence():
+    finding = make_finding(
+        service=None,
+        title="Host observation",
+        raw_evidence="No service-level evidence",
+        cve_ids=[],
+    )
+
+    enriched = match_finding(finding)
+
+    assert enriched.confidence == "weak"
 
 
 def test_product_specific_entries_are_not_selected_for_other_products():
@@ -119,8 +150,25 @@ def test_exact_version_match_does_not_overmatch_prefix_versions():
 
     match, confidence = _find_best_match(entries, product="apache", version="2.4.490")
 
-    assert confidence == "strong"
+    assert confidence == "product"
     assert match["cves"] == ["CVE-2011-3192"]
+
+
+def test_product_only_match_does_not_infer_model_specific_cves_or_priority():
+    finding = make_finding(
+        title="Open port 80/tcp - TP-LINK 999.999",
+        raw_evidence="service: http\nproduct: TP-LINK\nversion: 999.999",
+        cve_ids=[],
+    )
+
+    enriched = match_finding(finding)
+
+    assert enriched.confidence == "weak"
+    assert enriched.cve_ids == []
+    assert enriched.priority is None
+    assert enriched.metasploit_modules == []
+    assert enriched.false_positive_likelihood == "medium"
+    assert "version or model was not confirmed" in enriched.false_positive_reason
 
 
 def test_http_tomcat_product_uses_tomcat_service_guidance():
@@ -158,6 +206,11 @@ def test_smb_windows_product_match_is_not_marked_weak_when_cve_is_parser_reporte
     assert enriched.cve_ids == ["CVE-2017-0144"]
     assert enriched.false_positive_likelihood == "low"
     assert "scanner output reported cve" in enriched.false_positive_reason.lower()
+    assert enriched.confidence == "scanner-reported"
+    assert enriched.metasploit_modules == [
+        "exploit/windows/smb/ms17_010_eternalblue",
+        "auxiliary/scanner/smb/smb_ms17_010",
+    ]
 
 
 def test_nuclei_findings_do_not_merge_adjacent_kb_cves():
@@ -178,3 +231,23 @@ def test_nuclei_findings_do_not_merge_adjacent_kb_cves():
     assert enriched.cve_ids == ["CVE-2021-41773"]
     assert "CVE-2021-42013" not in enriched.cve_ids
     assert enriched.remediation
+
+
+def test_bundled_metasploit_module_paths_have_runnable_type_prefixes():
+    knowledge = json.loads(_KNOWLEDGE_FILE.read_text())
+    module_pattern = re.compile(
+        r"^(?:exploit|auxiliary|post|payload|encoder|nop|evasion)/[\w./-]+$"
+    )
+
+    modules = [
+        module
+        for entries in knowledge.values()
+        for entry in entries
+        for module in entry.get("metasploit_modules", [])
+    ]
+
+    assert modules
+    assert all(module_pattern.fullmatch(module) for module in modules)
+    assert "auxiliary/scanner/ftp/ftp_anonymous" in modules
+    assert "exploit/multi/http/weblogic_admin_handle_rce" in modules
+    assert not any("brutefore" in module or module.startswith("exploits/") for module in modules)

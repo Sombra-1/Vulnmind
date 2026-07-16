@@ -23,6 +23,7 @@ correct parsing method internally.
 
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -117,19 +118,50 @@ class NmapParser(BaseParser):
 
                 # Collect all NSE script output for this port
                 scripts = port_elem.findall("script")
+                blocked_script_evidence = [
+                    f"{script.get('id', 'unknown')}: "
+                    f"{script.get('output', '').strip()[:500]}"
+                    for script in scripts
+                    if _script_blocks_kb_inference(
+                        script.get("id", ""),
+                        script.get("output", ""),
+                    )
+                ]
+                negated_cves = {
+                    cve_id
+                    for script in scripts
+                    for cve_id in _explicitly_negated_cves(
+                        script.get("id", ""),
+                        script.get("output", ""),
+                    )
+                }
                 script_findings = self._parse_scripts(
                     scripts, display_host, port_num, protocol,
                     service_info, file_path, seen_ids
                 )
 
                 if script_findings:
+                    if blocked_script_evidence:
+                        script_findings = [
+                            _attach_blocked_script_evidence(
+                                finding,
+                                blocked_script_evidence,
+                                negated_cves,
+                            )
+                            for finding in script_findings
+                        ]
                     # Scripts found vulnerabilities — use those as findings
                     findings.extend(script_findings)
                     seen_ids.update(f.id for f in script_findings)
                 else:
                     # No scripts — create a basic "open port" finding
                     finding = self._make_open_port_finding(
-                        display_host, port_num, protocol, service_info, file_path
+                        display_host,
+                        port_num,
+                        protocol,
+                        service_info,
+                        file_path,
+                        blocked_script_evidence=blocked_script_evidence,
                     )
                     if finding.id not in seen_ids:
                         findings.append(finding)
@@ -198,13 +230,7 @@ class NmapParser(BaseParser):
             if not output:
                 continue
 
-            # Only create findings for scripts that indicate vulnerabilities
-            is_vuln_script = (
-                "vuln" in script_id.lower()
-                or "exploit" in script_id.lower()
-                or CVE_PATTERN.search(output)
-            )
-            if not is_vuln_script:
+            if not _script_reports_vulnerability(script_id, output):
                 continue
 
             cve_ids = sorted({c.upper() for c in CVE_PATTERN.findall(output)})
@@ -242,11 +268,20 @@ class NmapParser(BaseParser):
                 description=description,
                 raw_evidence="\n".join(ev_parts),
                 cve_ids=list(dict.fromkeys(cve_ids)),  # deduplicated, order-preserved
+                confidence="scanner-reported",
             ))
 
         return findings
 
-    def _make_open_port_finding(self, host, port, protocol, service_info, file_path) -> Finding:
+    def _make_open_port_finding(
+        self,
+        host,
+        port,
+        protocol,
+        service_info,
+        file_path,
+        blocked_script_evidence=None,
+    ) -> Finding:
         """Create a basic Finding for an open port with no NSE vuln scripts."""
         product = service_info.get("product", "")
         version = service_info.get("version", "")
@@ -274,9 +309,19 @@ class NmapParser(BaseParser):
         if version:
             evidence_parts.append(f"version: {version}")
         evidence_parts.append(display)
+        if blocked_script_evidence:
+            evidence_parts.append(
+                "kb-vulnerability-inference: blocked "
+                "(explicit negative or inconclusive NSE result)"
+            )
+            evidence_parts.extend(
+                f"NSE result: {evidence}" for evidence in blocked_script_evidence
+            )
 
         return Finding(
-            id=make_finding_id(host, port, title),
+            # Basic open-port IDs deliberately ignore presentation differences
+            # between nmap XML and text output from the same -oA scan.
+            id=make_finding_id(host, port, f"open-port:{protocol}"),
             source_tool="nmap",
             source_file=str(file_path),
             timestamp=make_timestamp(),
@@ -326,6 +371,8 @@ class NmapParser(BaseParser):
         current_service_version = ""  # full version string for context
         current_script_name = None
         script_buffer = []
+        blocked_script_evidence = {}
+        negated_cves_by_port = {}
 
         # Regex patterns for the text format
         # Matches: "22/tcp   open   ssh      OpenSSH 7.2p2 Ubuntu..."
@@ -350,11 +397,22 @@ class NmapParser(BaseParser):
 
             output = "\n".join(script_buffer).strip()
             cve_ids = sorted({c.upper() for c in CVE_PATTERN.findall(output)})
-            is_vuln = (
-                "vuln" in current_script_name.lower()
-                or "exploit" in current_script_name.lower()
-                or cve_ids
+            is_vuln = _script_reports_vulnerability(
+                current_script_name,
+                output,
             )
+
+            if (
+                current_port is not None
+                and _script_blocks_kb_inference(current_script_name, output)
+            ):
+                key = (current_host, current_port)
+                blocked_script_evidence.setdefault(key, []).append(
+                    f"{current_script_name}: {output[:500]}"
+                )
+                negated_cves_by_port.setdefault(key, set()).update(
+                    _explicitly_negated_cves(current_script_name, output)
+                )
 
             if is_vuln and current_port is not None:
                 finding_id = make_finding_id(current_host, current_port, current_script_name)
@@ -380,6 +438,7 @@ class NmapParser(BaseParser):
                         description=f"NSE script '{current_script_name}' flagged this port.",
                         raw_evidence="\n".join(evidence_lines),
                         cve_ids=list(dict.fromkeys(cve_ids)),
+                        confidence="scanner-reported",
                     ))
                     seen_ids.add(finding_id)
 
@@ -395,7 +454,14 @@ class NmapParser(BaseParser):
                 flush_script()
                 # If the previous port had no script findings, record it as a basic finding
                 for h, p, pr, svc in pending_open_ports:
-                    f = self._make_open_port_finding(h, p, pr, {"name": svc, "display": svc}, file_path)
+                    f = self._make_open_port_finding(
+                        h,
+                        p,
+                        pr,
+                        {"name": svc, "display": svc},
+                        file_path,
+                        blocked_script_evidence=blocked_script_evidence.get((h, p)),
+                    )
                     if f.id not in seen_ids:
                         findings.append(f)
                         seen_ids.add(f.id)
@@ -403,8 +469,9 @@ class NmapParser(BaseParser):
 
                 hostname_part = m.group(1)
                 ip_part = m.group(2)
-                # Prefer IP address as the canonical host identifier
-                current_host = ip_part if ip_part else hostname_part
+                # Match XML behavior: prefer the displayed hostname when nmap
+                # emits "hostname (IP)" so -oA XML/text IDs deduplicate.
+                current_host = hostname_part if ip_part else hostname_part
                 current_port = None
                 continue
 
@@ -442,9 +509,164 @@ class NmapParser(BaseParser):
         # End of file — flush remaining state
         flush_script()
         for h, p, pr, svc in pending_open_ports:
-            f = self._make_open_port_finding(h, p, pr, {"name": svc.split()[0] if svc else "unknown", "display": svc}, file_path)
+            f = self._make_open_port_finding(
+                h,
+                p,
+                pr,
+                {
+                    "name": svc.split()[0] if svc else "unknown",
+                    "display": svc,
+                },
+                file_path,
+                blocked_script_evidence=blocked_script_evidence.get((h, p)),
+            )
             if f.id not in seen_ids:
                 findings.append(f)
                 seen_ids.add(f.id)
 
+        # Text output can report several NSE scripts on one port in either
+        # order. Propagate a negative/inconclusive sibling to every positive
+        # script finding on that port so version-only matching cannot reverse
+        # the dedicated check after parsing.
+        for index, finding in enumerate(findings):
+            evidence = blocked_script_evidence.get((finding.host, finding.port))
+            if evidence and not finding.title.startswith("Open port "):
+                findings[index] = _attach_blocked_script_evidence(
+                    finding,
+                    evidence,
+                    negated_cves_by_port.get(
+                        (finding.host, finding.port),
+                        set(),
+                    ),
+                )
+
         return findings
+
+
+def _is_explicit_negative_result(output: str) -> bool:
+    """Return true when NSE explicitly reports that the target is unaffected."""
+    if not isinstance(output, str):
+        return False
+    return bool(re.search(
+        r"\bNOT\s+VULNERABLE\b|\bNOT\s+AFFECTED\b|"
+        r"\bVULNERABLE\s*:\s*(?:FALSE|NO)\b|"
+        r"\b(?:NO|ZERO|0)\s+(?:KNOWN\s+)?VULNERABILIT(?:Y|IES)"
+        r"(?:\s+(?:WAS|WERE))?\s+(?:FOUND|DETECTED|IDENTIFIED)\b",
+        output,
+        re.IGNORECASE,
+    ))
+
+
+def _script_reports_vulnerability(script_id: str, output: str) -> bool:
+    """Require positive NSE evidence, not merely a vulnerability script name."""
+    if (
+        not isinstance(output, str)
+        or _is_explicit_negative_result(output)
+        or _is_inconclusive_result(output)
+    ):
+        return False
+
+    positive_status = re.search(
+        r"(?:^|\n)\s*(?:STATE\s*:\s*)?(?:LIKELY\s+)?VULNERABLE\b|"
+        r"\b(?:TARGET|HOST)\s+IS\s+(?:LIKELY\s+)?VULNERABLE\b|"
+        r"(?:^|\n)\s*(?:STATE\s*:\s*)?EXPLOITABLE\b|"
+        r"(?:^|\n)\s*BACKDOOR\b",
+        output,
+        re.IGNORECASE,
+    )
+    if positive_status:
+        return True
+
+    # Scripts such as `vulners` emit CVE rows rather than a VULNERABLE state.
+    # Exact scanner-reported CVEs remain valid positive evidence.
+    return CVE_PATTERN.search(output) is not None
+
+
+def _is_inconclusive_result(output: str) -> bool:
+    """Return true when NSE could not determine vulnerability status."""
+    if not isinstance(output, str):
+        return False
+    return bool(re.search(
+        r"(?:^|\n)\s*(?:ERROR|FAILED)\s*:|"
+        r"SCRIPT\s+EXECUTION\s+FAILED|"
+        r"COULD\s+NOT\s+DETERMINE|CAN(?:NO|')?T\s+DETERMINE|"
+        r"UNABLE\s+TO\s+DETERMINE|INCONCLUSIVE|"
+        r"\bTIMED?\s*OUT\b|\bTIMEOUT\b|"
+        r"COULD\s+NOT\s+CONNECT|CONNECTION\s+(?:FAILED|REFUSED)|"
+        r"CHECK\s+FAILED",
+        output,
+        re.IGNORECASE,
+    ))
+
+
+def _script_blocks_kb_inference(script_id: str, output: str) -> bool:
+    """Protect a dedicated negative/inconclusive NSE result from KB reversal."""
+    if not isinstance(script_id, str) or not isinstance(output, str):
+        return False
+    vulnerability_script = (
+        "vuln" in script_id.lower()
+        or CVE_PATTERN.search(script_id) is not None
+        or CVE_PATTERN.search(output) is not None
+    )
+    return vulnerability_script and (
+        _is_explicit_negative_result(output)
+        or _is_inconclusive_result(output)
+    )
+
+
+def _attach_blocked_script_evidence(
+    finding: Finding,
+    evidence: list[str],
+    negated_cves: set[str] | None = None,
+) -> Finding:
+    """Carry port-level contradictory NSE evidence into a positive sibling."""
+    marker = (
+        "kb-vulnerability-inference: blocked "
+        "(explicit negative or inconclusive NSE result)"
+    )
+    if marker in (finding.raw_evidence or ""):
+        return finding
+    raw_evidence = "\n".join([
+        finding.raw_evidence,
+        marker,
+        *(f"NSE result: {item}" for item in evidence),
+    ])
+    excluded = {cve.upper() for cve in (negated_cves or set())}
+    cve_ids = [
+        cve_id
+        for cve_id in finding.cve_ids
+        if not isinstance(cve_id, str) or cve_id.upper() not in excluded
+    ]
+    description = finding.description
+    if cve_ids != finding.cve_ids:
+        description = (
+            f"NSE script '{finding.title.split(' on ', 1)[0]}' reported a "
+            "positive result; CVEs contradicted by a dedicated negative "
+            "check on the same port were omitted."
+        )
+    return replace(
+        finding,
+        raw_evidence=raw_evidence,
+        cve_ids=cve_ids,
+        description=description,
+        priority=finding.priority or "medium",
+        priority_reason=(
+            finding.priority_reason
+            or "NSE reported a positive result; a separate negative or "
+            "inconclusive check prevented version-only CVE inference."
+        ),
+    )
+
+
+def _explicitly_negated_cves(script_id: str, output: str) -> set[str]:
+    """Extract CVEs covered by a dedicated explicit-negative NSE result."""
+    if not _is_explicit_negative_result(output):
+        return set()
+    cves = {match.upper() for match in CVE_PATTERN.findall(output)}
+    for year, number in re.findall(
+        r"CVE[-_]?([0-9]{4})[-_]?([0-9]{4,7})",
+        script_id,
+        re.IGNORECASE,
+    ):
+        cves.add(f"CVE-{year}-{number}")
+    return cves

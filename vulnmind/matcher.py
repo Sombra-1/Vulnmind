@@ -55,10 +55,17 @@ def match_finding(finding) -> object:
     Returns an enriched copy of the finding, or the original if no match.
     """
     knowledge = _load_knowledge()
+    initial_confidence = _initial_confidence(finding)
+
+    # A dedicated NSE vulnerability check that explicitly returned negative or
+    # inconclusive evidence outranks version-only inference. Keep the open-port
+    # observation, but do not turn it back into the vulnerability it rejected.
+    if "kb-vulnerability-inference: blocked" in (finding.raw_evidence or ""):
+        return replace(finding, confidence=initial_confidence)
 
     service = (finding.service or "").lower().strip()
     if not service:
-        return finding
+        return replace(finding, confidence=initial_confidence)
 
     # Normalise service aliases
     service = _normalise_service(service)
@@ -67,26 +74,33 @@ def match_finding(finding) -> object:
     product, version = _extract_product_version(finding)
 
     # Find the best matching entry — returns (entry, confidence, service)
-    # confidence is "strong" (product+version) or "weak" (product-only / service fallback)
+    # quality is "strong" (product+version), "product" (product only), or
+    # "weak" (service fallback). Only strong can add version-specific CVEs.
     match_result = _find_best_service_match(knowledge, service, product, version)
     if not match_result:
-        return finding
+        return replace(finding, confidence=initial_confidence)
 
     match, confidence, matched_service = match_result
+    finding_confidence = _higher_confidence(initial_confidence, confidence)
 
     # CVE merging rules:
     #   - Strong match: merge KB CVEs with parser CVEs
     #   - Weak match (no product match): do NOT add KB CVEs — would be
     #     a false positive. Only use the entry for generic guidance.
-    existing_cves = set(finding.cve_ids or [])
+    existing_cve_list = list(dict.fromkeys(finding.cve_ids or []))
+    existing_cves = set(existing_cve_list)
     kb_cves = set(match.get("cves", []))
+    scanner_confirmed_kb_cve = bool(existing_cves & kb_cves)
     # Nuclei templates carry explicit classification CVEs. Keep that scanner
     # CVE set conservative instead of adding adjacent KB CVEs to the finding.
     allow_kb_cve_merge = confidence == "strong" and finding.source_tool != "nuclei"
     if allow_kb_cve_merge:
-        merged_cves = list(existing_cves | kb_cves)
+        merged_cves = list(dict.fromkeys([
+            *existing_cve_list,
+            *match.get("cves", []),
+        ]))
     else:
-        merged_cves = list(existing_cves)
+        merged_cves = existing_cve_list
 
     # Build commands with host/port substituted in.
     # Only use KB commands on strong matches — weak matches would suggest
@@ -100,16 +114,29 @@ def match_finding(finding) -> object:
             for cmd in match.get("suggested_commands", [])
         ]
 
-    # Metasploit modules — only on strong matches
-    msf_modules = match.get("metasploit_modules", []) if confidence == "strong" else []
+    # Modules are safe on a product/version match or an exact intersection
+    # between a scanner-reported CVE and the selected KB entry. A generic
+    # service-only fallback without that intersection must not claim a module.
+    msf_modules = (
+        match.get("metasploit_modules", [])
+        if confidence == "strong" or scanner_confirmed_kb_cve
+        else []
+    )
 
-    # Priority — always use KB priority if present (even on weak match, because
-    # it's service-level guidance like "any exposed SMB is risky")
-    matched_priority = match.get("priority")
+    # Weak KB fallbacks imported from scanner-script data can be CVE-specific.
+    # Use weak guidance only when the scanner confirmed one of those CVEs or
+    # the entry contains clearly generic service remediation/no CVE list.
+    generic_service_guidance = not kb_cves
+    guidance_supported = (
+        confidence == "strong"
+        or scanner_confirmed_kb_cve
+        or generic_service_guidance
+    )
+    matched_priority = match.get("priority") if guidance_supported else None
 
     # Priority reason — use KB's field if present, else build one
-    kb_priority_reason = match.get("priority_reason")
-    if not kb_priority_reason:
+    kb_priority_reason = match.get("priority_reason") if guidance_supported else None
+    if not kb_priority_reason and guidance_supported:
         if confidence == "strong" and merged_cves:
             kb_priority_reason = (
                 f"Matched '{match.get('product')}' in offline KB — "
@@ -124,15 +151,20 @@ def match_finding(finding) -> object:
 
     # Description — NEVER overwrite parser's description. Parser built it from
     # actual scan evidence. Only fill it if parser left it empty (rare).
-    description = finding.description or match.get("description") or ""
+    description = (
+        finding.description
+        or (match.get("description") if guidance_supported else "")
+        or ""
+    )
 
     # Remediation — use KB if it has one
-    remediation = finding.remediation or match.get("remediation")
+    remediation = finding.remediation or (
+        match.get("remediation") if guidance_supported else None
+    )
 
     # False-positive assessment — strong match = low, weak match = medium.
     # If a weak service fallback is confirmed by a scanner-reported CVE that
     # also exists in that KB entry, keep the CVE but do not add unrelated KB CVEs.
-    scanner_confirmed_kb_cve = bool(existing_cves & kb_cves)
     fp_likelihood = finding.false_positive_likelihood
     if not fp_likelihood:
         fp_likelihood = "low" if confidence == "strong" or scanner_confirmed_kb_cve else "medium"
@@ -142,6 +174,8 @@ def match_finding(finding) -> object:
             fp_reason = "Matched product and/or version against known vulnerable entry."
         elif scanner_confirmed_kb_cve:
             fp_reason = "Scanner output reported CVE ID(s); KB match was service-level only."
+        elif confidence == "product":
+            fp_reason = "Product matched, but the affected version or model was not confirmed."
         else:
             fp_reason = "Service-level match only — specific product/version not confirmed."
 
@@ -156,12 +190,40 @@ def match_finding(finding) -> object:
         false_positive_likelihood=fp_likelihood,
         false_positive_reason=fp_reason,
         remediation=remediation,
+        confidence=finding_confidence,
     )
 
 
 def match_findings(findings: list) -> list:
     """Enrich a list of findings from the knowledge base."""
     return [match_finding(f) for f in findings]
+
+
+_CONFIDENCE_RANK = {
+    "weak": 1,
+    "strong": 2,
+    "scanner-reported": 3,
+    "confirmed": 4,
+}
+
+
+def _initial_confidence(finding) -> str:
+    """Derive confidence from parser-owned evidence before KB CVEs are added."""
+    current = getattr(finding, "confidence", "weak")
+    if current == "confirmed":
+        return current
+    if finding.cve_ids:
+        return "scanner-reported"
+    if current in _CONFIDENCE_RANK:
+        return current
+    return "weak"
+
+
+def _higher_confidence(current: str, candidate: str) -> str:
+    """Return the better-supported confidence without lowering parser evidence."""
+    if _CONFIDENCE_RANK.get(candidate, 0) > _CONFIDENCE_RANK.get(current, 0):
+        return candidate
+    return current
 
 
 # ---------------------------------------------------------------------------
@@ -434,12 +496,13 @@ def _find_best_match(entries: list, product: str, version: str):
     Find the best matching entry from the knowledge base.
 
     Returns: (entry_dict, confidence_str) or None
-      confidence is "strong" (product matched) or "weak" (service fallback only)
+      quality is "strong" (product+version), "product" (product only), or
+      "weak" (service fallback only)
 
     Match priority:
       1. STRONG: product match + exact version match
       2. STRONG: product match + version-before match
-      3. STRONG: product match + no version constraint on entry
+      3. PRODUCT: product match + no version constraint on entry
       4. WEAK:   service fallback (entry with no product constraint)
 
     Critical rule: we NEVER return a product-specific entry for a different
@@ -496,7 +559,7 @@ def _find_best_match(entries: list, product: str, version: str):
     if best_version_match:
         return (best_version_match, "strong")
     if best_product_match:
-        return (best_product_match, "strong")
+        return (best_product_match, "product")
     if fallback:
         return (fallback, "weak")
     return None
@@ -517,6 +580,7 @@ def _find_best_service_match(knowledge: dict, service: str, product: str, versio
             candidates.append(candidate)
 
     fallback_result = None
+    quality_rank = {"weak": 1, "product": 2, "strong": 3}
     for candidate in candidates:
         entries = knowledge.get(candidate)
         if not entries:
@@ -527,7 +591,11 @@ def _find_best_service_match(knowledge: dict, service: str, product: str, versio
         entry, confidence = result
         if confidence == "strong":
             return entry, confidence, candidate
-        if fallback_result is None:
+        if (
+            fallback_result is None
+            or quality_rank.get(confidence, 0)
+            > quality_rank.get(fallback_result[1], 0)
+        ):
             fallback_result = (entry, confidence, candidate)
 
     return fallback_result

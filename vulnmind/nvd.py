@@ -28,6 +28,9 @@ Reliability:
 from __future__ import annotations
 
 import json
+import math
+import os
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -35,11 +38,13 @@ from typing import Optional
 
 import requests
 
+from vulnmind import __version__
 from vulnmind.config import CACHE_DIR
 
 NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_CACHE_DIR = CACHE_DIR / "nvd"
 CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
+MAX_CACHE_FILE_BYTES = 2 * 1024 * 1024
 
 # NVD public rate limit: 5 requests per 30 seconds.
 # Stay comfortably under by sleeping 6.5s between requests.
@@ -140,7 +145,10 @@ def _fetch_cve(cve_id: str, max_retries: int = 3) -> Optional[dict]:
                 params={"cveId": cve_id},
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": "vulnmind/0.5.0 (+https://github.com/Sombra-1/vulnmind)",
+                    "User-Agent": (
+                        f"vulnmind/{__version__} "
+                        "(+https://github.com/Sombra-1/vulnmind)"
+                    ),
                 },
                 timeout=REQUEST_TIMEOUT,
             )
@@ -160,11 +168,21 @@ def _fetch_cve(cve_id: str, max_retries: int = 3) -> Optional[dict]:
         except (requests.RequestException, ValueError):
             return None
 
+        if not isinstance(payload, dict):
+            return None
+
         vulnerabilities = payload.get("vulnerabilities", [])
+        if not isinstance(vulnerabilities, list):
+            return None
         if not vulnerabilities:
             return {"cve_id": cve_id, "found": False}
 
-        cve = vulnerabilities[0].get("cve", {})
+        first = vulnerabilities[0]
+        if not isinstance(first, dict):
+            return None
+        cve = first.get("cve")
+        if not isinstance(cve, dict):
+            return None
         return _normalize_cve(cve_id, cve)
 
     # All retries exhausted
@@ -180,38 +198,62 @@ def _normalize_cve(cve_id: str, cve: dict) -> dict:
     """
     # Description — English preferred
     description = ""
-    for d in cve.get("descriptions", []):
-        if d.get("lang") == "en":
-            description = d.get("value", "")[:1000]
+    descriptions = cve.get("descriptions", [])
+    if not isinstance(descriptions, list):
+        descriptions = []
+    for d in descriptions:
+        if not isinstance(d, dict) or d.get("lang") != "en":
+            continue
+        value = d.get("value", "")
+        if isinstance(value, str):
+            description = value[:1000]
             break
 
     # CVSS — walk through metrics in order of preference
     metrics = cve.get("metrics", {}) or {}
+    if not isinstance(metrics, dict):
+        metrics = {}
     cvss_score: Optional[float] = None
     cvss_severity: Optional[str] = None
     cvss_vector: Optional[str] = None
 
     for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
-        if key in metrics and metrics[key]:
-            primary = metrics[key][0]
-            data = primary.get("cvssData", {}) or {}
-            score = data.get("baseScore")
-            if isinstance(score, (int, float)):
-                cvss_score = _clamp(float(score), 0.0, 10.0)
-                cvss_severity = (
-                    data.get("baseSeverity")
-                    or primary.get("baseSeverity")
-                    or _severity_from_score(cvss_score)
-                )
-                cvss_vector = data.get("vectorString")
-                break
+        metric_entries = metrics.get(key)
+        if not isinstance(metric_entries, list) or not metric_entries:
+            continue
+        primary = metric_entries[0]
+        if not isinstance(primary, dict):
+            continue
+        data = primary.get("cvssData", {}) or {}
+        if not isinstance(data, dict):
+            continue
+        score = data.get("baseScore")
+        if not _is_finite_number(score):
+            continue
+        cvss_score = _clamp(float(score), 0.0, 10.0)
+        severity = data.get("baseSeverity") or primary.get("baseSeverity")
+        cvss_severity = severity if isinstance(severity, str) else _severity_from_score(cvss_score)
+        vector = data.get("vectorString")
+        cvss_vector = vector if isinstance(vector, str) else None
+        break
 
     # References — grab a couple of canonical URLs
     references = []
-    for ref in cve.get("references", [])[:3]:
+    raw_references = cve.get("references", [])
+    if not isinstance(raw_references, list):
+        raw_references = []
+    for ref in raw_references:
+        if not isinstance(ref, dict):
+            continue
         url = ref.get("url")
-        if url:
+        if isinstance(url, str) and url:
             references.append(url)
+            if len(references) == 3:
+                break
+
+    published = cve.get("published")
+    if not isinstance(published, str):
+        published = None
 
     return {
         "cve_id": cve_id,
@@ -220,7 +262,7 @@ def _normalize_cve(cve_id: str, cve: dict) -> dict:
         "cvss_score": cvss_score,
         "cvss_severity": (cvss_severity or "").lower() or None,
         "cvss_vector": cvss_vector,
-        "published": cve.get("published"),
+        "published": published,
         "references": references,
     }
 
@@ -230,15 +272,22 @@ def _apply_to_finding(finding, cve_data: dict):
     if not finding.cve_ids:
         return finding
 
-    max_score: Optional[float] = finding.cvss_score
+    current_score = finding.cvss_score
+    max_score: Optional[float] = (
+        float(current_score)
+        if _valid_cvss_score(current_score)
+        else None
+    )
 
     for cve_id in finding.cve_ids:
+        if not isinstance(cve_id, str):
+            continue
         cid = cve_id.upper()
         data = cve_data.get(cid)
         if not data or not data.get("found"):
             continue
         score = data.get("cvss_score")
-        if isinstance(score, (int, float)):
+        if _valid_cvss_score(score):
             if max_score is None or score > max_score:
                 max_score = float(score)
 
@@ -296,6 +345,21 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _is_finite_number(value) -> bool:
+    """Return True for finite JSON numbers, excluding booleans."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _valid_cvss_score(value) -> bool:
+    """Return True only for a finite CVSS base score in its defined range."""
+    return _is_finite_number(value) and 0.0 <= value <= 10.0
+
+
 # ---------------------------------------------------------------------------
 # Cache
 # ---------------------------------------------------------------------------
@@ -310,23 +374,55 @@ def _read_cache(cve_id: str) -> Optional[dict]:
     try:
         if not path.exists():
             return None
-        with open(path) as f:
-            data = json.load(f)
-        # TTL check — stale cache returns None, triggering a re-fetch
-        cached_at = data.get("_cached_at", 0)
-        if time.time() - cached_at > CACHE_TTL_SECONDS:
+        if path.stat().st_size > MAX_CACHE_FILE_BYTES:
             return None
-        return data.get("payload")
-    except (OSError, json.JSONDecodeError):
+        with open(path, encoding="utf-8") as f:
+            raw = f.read(MAX_CACHE_FILE_BYTES + 1)
+        if len(raw) > MAX_CACHE_FILE_BYTES:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+
+        # TTL check — stale cache returns None, triggering a re-fetch
+        cached_at = data.get("_cached_at")
+        if not _is_finite_number(cached_at):
+            return None
+        now = time.time()
+        if cached_at > now or now - cached_at > CACHE_TTL_SECONDS:
+            return None
+        payload = data.get("payload")
+        return payload if isinstance(payload, dict) else None
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         return None
 
 
 def _write_cache(cve_id: str, payload: dict) -> None:
     """Write CVE data to cache. Silent on failure."""
+    if not isinstance(payload, dict):
+        return
+
+    temp_path: Optional[Path] = None
     try:
         NVD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path = _cache_path(cve_id)
-        with open(path, "w") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=NVD_CACHE_DIR,
+            prefix=f".{cve_id}.",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            temp_path = Path(f.name)
             json.dump({"_cached_at": time.time(), "payload": payload}, f)
-    except OSError:
-        pass
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    except (OSError, TypeError, ValueError):
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass

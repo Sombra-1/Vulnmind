@@ -60,9 +60,7 @@
         "nmap --script dns-zone-transfer -p {port} {host}",
         "nmap --script dns-recursion -p {port} {host}"
       ],
-      "metasploit_modules": [
-        "auxiliary/gather/dns_brutefore"
-      ]
+      "metasploit_modules": []
     }
   ],
   "ftp": [
@@ -78,8 +76,7 @@
         "nmap --script ftp-vsftpd-backdoor -p 21 {host}"
       ],
       "metasploit_modules": [
-        "exploit/unix/ftp/vsftpd_234_backdoor",
-        "exploits/unix/ftp/vsftpd_234_backdoor"
+        "exploit/unix/ftp/vsftpd_234_backdoor"
       ],
       "priority_reason": "vsftpd 2.3.4 ships with a malicious backdoor that opens a root shell on port 6200 \u2014 unauthenticated remote code execution.",
       "remediation": "Upgrade vsftpd to 2.3.5 or later. Verify the binary's SHA256 against the official vsftpd release hash. Restrict FTP to trusted networks or replace with SFTP."
@@ -115,7 +112,7 @@
         "nmap --script ftp-libopie -p 21 {host}"
       ],
       "metasploit_modules": [
-        "auxiliary/scanner/ftp/anonymous",
+        "auxiliary/scanner/ftp/ftp_anonymous",
         "auxiliary/scanner/ftp/ftp_login"
       ]
     },
@@ -156,8 +153,7 @@
       "version_match": "2.4.49",
       "priority": "critical",
       "cves": [
-        "CVE-2021-41773",
-        "CVE-2021-42013"
+        "CVE-2021-41773"
       ],
       "description": "Apache 2.4.49 has a path traversal and remote code execution vulnerability. Widely exploited in the wild.",
       "suggested_commands": [
@@ -169,6 +165,23 @@
       ],
       "priority_reason": "Apache 2.4.49 path-traversal / RCE \u2014 trivially exploitable, widely weaponised. Critical and often unauthenticated.",
       "remediation": "Upgrade Apache HTTP Server to 2.4.51 or later. Verify no custom aliases expose the filesystem. Review logs for /cgi-bin/.%2e/ patterns."
+    },
+    {
+      "product": "apache",
+      "version_match": "2.4.50",
+      "priority": "critical",
+      "cves": [
+        "CVE-2021-42013"
+      ],
+      "description": "Apache 2.4.50 is vulnerable to a path traversal and potential remote code execution bypass of the 2.4.49 fix.",
+      "suggested_commands": [
+        "curl -s --path-as-is http://{host}:{port}/cgi-bin/.%%32%65/.%%32%65/.%%32%65/.%%32%65/etc/passwd"
+      ],
+      "metasploit_modules": [
+        "exploit/multi/http/apache_normalize_path_rce"
+      ],
+      "priority_reason": "Apache 2.4.50 remains vulnerable to the CVE-2021-42013 path-traversal / RCE bypass and should be upgraded immediately.",
+      "remediation": "Upgrade Apache HTTP Server to 2.4.51 or later. Review logs for encoded traversal attempts and restrict CGI execution."
     },
     {
       "product": "iis",
@@ -203,9 +216,7 @@
         "hydra -l admin -P /usr/share/wordlists/rockyou.txt http-get://{host}:{port}/",
         "nmap --script http-default-accounts -p {port} {host}"
       ],
-      "metasploit_modules": [
-        "auxiliary/scanner/http/tp_link_traversal"
-      ],
+      "metasploit_modules": [],
       "priority_reason": "TP-LINK admin interface is widely deployed with default credentials (admin/admin) and multiple firmware CVEs.",
       "remediation": "Change default credentials immediately. Update router firmware. Restrict admin UI to LAN-only. Disable remote management."
     },
@@ -508,7 +519,7 @@
         "nmap --script smb-vuln-cve-2017-7494 -p 445 {host}"
       ],
       "metasploit_modules": [
-        "exploits/linux/samba/is_known_pipename"
+        "exploit/linux/samba/is_known_pipename"
       ],
       "priority_reason": "Samba <4.5.10 \u2192 SambaCry (CVE-2017-7494) unauth RCE via writable share. Active exploitation in the wild.",
       "remediation": "Upgrade Samba to \u22654.18. Set 'nt pipe support = no' on legacy versions as a workaround. Restrict writable share ACLs."
@@ -617,13 +628,10 @@
   "mysql": [
     {
       "product": null,
-      "version_before": "8.0",
+      "version_before": null,
       "priority": "medium",
-      "cves": [
-        "CVE-2016-6662",
-        "CVE-2012-2122"
-      ],
-      "description": "MySQL exposed on the network. Check for remote root access, weak credentials, and outdated version CVEs.",
+      "cves": [],
+      "description": "MySQL is exposed on the network. Check for remote root access, weak credentials, unnecessary public reachability, and unsupported server versions.",
       "suggested_commands": [
         "nmap --script mysql-info,mysql-empty-password,mysql-databases -p {port} {host}",
         "hydra -l root -P /usr/share/wordlists/rockyou.txt mysql://{host}:{port}"
@@ -632,7 +640,7 @@
         "auxiliary/scanner/mysql/mysql_login",
         "auxiliary/admin/mysql/mysql_enum"
       ],
-      "priority_reason": "MySQL exposed on the public network is a frequent target for brute-force, auth-bypass (CVE-2012-2122), and user-defined function RCEs.",
+      "priority_reason": "A network-exposed database increases brute-force and data-access risk; confirm that access is restricted to trusted application hosts.",
       "remediation": "Bind MySQL to localhost or private network. Enforce strong root password. Upgrade to current 8.x. Disable LOAD DATA LOCAL where not needed."
     },
     {
@@ -1020,7 +1028,7 @@
         "nmap --script rmi-vuln-classloader -p 0 {host}"
       ],
       "metasploit_modules": [
-        "exploits/multi/misc/java_rmi_server"
+        "exploit/multi/misc/java_rmi_server"
       ]
     }
   ],
@@ -1083,6 +1091,7 @@
       "priority": "critical",
       "cves": [
         "CVE-2020-14882",
+        "CVE-2020-14883",
         "CVE-2017-10271"
       ],
       "description": "Oracle WebLogic server found running. Historically affected by numerous critical RCE vulnerabilities via deserialization and console bypass.",
@@ -1090,8 +1099,8 @@
         "nmap -p {port} --script weblogic-t3-info {host}"
       ],
       "metasploit_modules": [
-        "exploit/multi/misc/weblogic_deserialize_asyncresponseservice",
-        "exploit/windows/misc/weblogic_xmlentity_rce"
+        "exploit/multi/http/weblogic_admin_handle_rce",
+        "exploit/multi/http/oracle_weblogic_wsat_deserialization_rce"
       ],
       "priority_reason": "Oracle WebLogic CVE-2020-14882/14883 \u2014 unauthenticated RCE via console. Actively exploited.",
       "remediation": "Apply Oracle CPU patches. Restrict /console to trusted IPs. Upgrade to supported WebLogic version."
