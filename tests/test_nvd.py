@@ -1,16 +1,20 @@
 import json
 import time
 
+import pytest
 import requests
 
 from vulnmind import nvd
 from vulnmind.parsers.base import Finding
 
 
+_MISSING = object()
+
+
 class FakeResponse:
-    def __init__(self, status_code=200, payload=None):
+    def __init__(self, status_code=200, payload=_MISSING):
         self.status_code = status_code
-        self._payload = payload or {}
+        self._payload = {} if payload is _MISSING else payload
 
     def json(self):
         return self._payload
@@ -84,10 +88,67 @@ def test_cache_round_trip_uses_configured_cache_dir(tmp_path, monkeypatch):
     assert json.loads(cached_file.read_text())["payload"] == payload
 
 
+def test_cache_write_uses_atomic_replace(tmp_path, monkeypatch):
+    monkeypatch.setattr(nvd, "NVD_CACHE_DIR", tmp_path)
+    real_replace = nvd.os.replace
+    replacements = []
+
+    def record_replace(source, destination):
+        replacements.append((source, destination))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(nvd.os, "replace", record_replace)
+
+    nvd._write_cache("CVE-2024-0001", {"found": True})
+
+    assert len(replacements) == 1
+    source, destination = replacements[0]
+    assert destination == tmp_path / "CVE-2024-0001.json"
+    assert source.parent == tmp_path
+    assert not source.exists()
+
+
 def test_stale_cache_is_ignored(tmp_path, monkeypatch):
     monkeypatch.setattr(nvd, "NVD_CACHE_DIR", tmp_path)
     path = tmp_path / "CVE-2024-0001.json"
     path.write_text(json.dumps({"_cached_at": 0, "payload": {"found": True}}))
+
+    assert nvd._read_cache("CVE-2024-0001") is None
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        [],
+        {"_cached_at": True, "payload": {}},
+        {"_cached_at": "now", "payload": {}},
+        {"_cached_at": float("nan"), "payload": {}},
+        {"_cached_at": 100.0, "payload": []},
+    ],
+)
+def test_invalid_cache_envelopes_are_ignored(tmp_path, monkeypatch, envelope):
+    monkeypatch.setattr(nvd, "NVD_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(nvd.time, "time", lambda: 100.0)
+    path = tmp_path / "CVE-2024-0001.json"
+    path.write_text(json.dumps(envelope))
+
+    assert nvd._read_cache("CVE-2024-0001") is None
+
+
+def test_future_cache_timestamp_is_ignored(tmp_path, monkeypatch):
+    monkeypatch.setattr(nvd, "NVD_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(nvd.time, "time", lambda: 100.0)
+    path = tmp_path / "CVE-2024-0001.json"
+    path.write_text(json.dumps({"_cached_at": 100.1, "payload": {"found": True}}))
+
+    assert nvd._read_cache("CVE-2024-0001") is None
+
+
+def test_oversized_cache_file_is_ignored(tmp_path, monkeypatch):
+    monkeypatch.setattr(nvd, "NVD_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(nvd, "MAX_CACHE_FILE_BYTES", 32)
+    path = tmp_path / "CVE-2024-0001.json"
+    path.write_text(" " * 33)
 
     assert nvd._read_cache("CVE-2024-0001") is None
 
@@ -117,6 +178,79 @@ def test_fetch_cve_normalizes_nvd_response(monkeypatch):
         "https://example.test/two",
         "https://example.test/three",
     ]
+
+
+@pytest.mark.parametrize("payload", [[], "invalid", 42, None])
+def test_fetch_cve_rejects_non_object_json_without_raising(monkeypatch, payload):
+    monkeypatch.setattr(
+        nvd.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(payload=payload),
+    )
+
+    result = nvd._fetch_cve("CVE-2024-0001")
+
+    assert result is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"vulnerabilities": {}},
+        {"vulnerabilities": [None]},
+        {"vulnerabilities": [{"cve": []}]},
+    ],
+)
+def test_fetch_cve_rejects_malformed_containers_without_raising(monkeypatch, payload):
+    monkeypatch.setattr(
+        nvd.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(payload=payload),
+    )
+
+    assert nvd._fetch_cve("CVE-2024-0001") is None
+
+
+def test_fetch_cve_tolerates_malformed_nested_fields(monkeypatch):
+    payload = {
+        "vulnerabilities": [
+            {
+                "cve": {
+                    "descriptions": [None, {"lang": "en", "value": 123}],
+                    "metrics": {
+                        "cvssMetricV31": [None],
+                        "cvssMetricV30": [{"cvssData": {"baseScore": float("nan")}}],
+                        "cvssMetricV2": [
+                            {
+                                "cvssData": {
+                                    "baseScore": 5.0,
+                                    "baseSeverity": 7,
+                                    "vectorString": ["invalid"],
+                                }
+                            }
+                        ],
+                    },
+                    "references": [None, {"url": 7}, {"url": "https://example.test/valid"}],
+                    "published": {},
+                }
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        nvd.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(payload=payload),
+    )
+
+    result = nvd._fetch_cve("CVE-2024-0001")
+
+    assert result["found"] is True
+    assert result["description"] == ""
+    assert result["cvss_score"] == 5.0
+    assert result["cvss_severity"] == "medium"
+    assert result["cvss_vector"] is None
+    assert result["references"] == ["https://example.test/valid"]
+    assert result["published"] is None
 
 
 def test_fetch_cve_retries_transient_statuses(monkeypatch):
@@ -156,6 +290,18 @@ def test_enrich_with_nvd_lifts_priority_using_highest_cvss(monkeypatch):
     assert enriched[0].cvss_score == 9.1
     assert enriched[0].priority == "critical"
     assert "Elevated by NVD" in enriched[0].priority_reason
+
+
+@pytest.mark.parametrize("invalid_score", [True, float("nan"), float("inf"), -1, 11])
+def test_apply_to_finding_ignores_invalid_cached_cvss(invalid_score):
+    finding = make_finding(cvss_score=float("nan"), priority="low")
+    data = {
+        "CVE-2024-0001": {"found": True, "cvss_score": invalid_score},
+    }
+
+    enriched = nvd._apply_to_finding(finding, data)
+
+    assert enriched is finding
 
 
 def test_enrich_with_nvd_rate_limits_only_network_fetches(monkeypatch):

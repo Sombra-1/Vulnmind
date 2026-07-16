@@ -30,7 +30,7 @@ class Finding:
     Fields are grouped by when they get populated:
 
       Parser fields    — set by nmap.py / nikto.py at parse time
-      Enrichment       — set by ai.py after the Groq API call
+      Enrichment       — set by the matcher and optional live data sources
       Metadata         — set at creation time, never mutated
     """
 
@@ -85,6 +85,34 @@ class Finding:
 
     cvss_score: Optional[float] = None
     """CVSS v3 base score (0.0 - 10.0). Populated via NVD lookup (--deep mode)."""
+
+    # --- Confidence and exploit intelligence (matcher/live enrichment) ---
+
+    confidence: str = "weak"
+    """Evidence confidence: 'confirmed', 'scanner-reported', 'strong', or 'weak'.
+
+    'confirmed' is reserved for explicit successful exploitation evidence;
+    'scanner-reported' means a scanner explicitly reported the vulnerability or
+    CVE; 'strong' is a product/version KB match; and 'weak' is service-level
+    guidance or an observation without product/version confirmation.
+    """
+
+    actively_exploited: bool = False
+    """True only when an associated CVE is present in the official CISA KEV catalog."""
+
+    exploit_available: bool = False
+    """True when a public exploit reference is associated with a finding CVE."""
+
+    metasploit_available: bool = False
+    """True when a known Metasploit module is associated with the finding."""
+
+    exploit_confidence: str = "none"
+    """Best exploit-intelligence source: cisa-kev, metasploit-module,
+    exploitdb-cve, or none.
+    """
+
+    exploit_references: list = field(default_factory=list)
+    """Bounded source URLs or IDs supporting the exploit-intelligence flags."""
 
     # --- Priority (set after AI enrichment or rule-based fallback) ---
 

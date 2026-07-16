@@ -11,7 +11,7 @@ Architecture: all
 Depends: ${python3:Depends}, ${misc:Depends}, python3-click, python3-rich, python3-requests, python3-reportlab
 Recommends: nmap
 Description: Security scan analyzer for pentesters
- CLI tool that parses Nmap, Nikto, and Metasploit console output into
+ CLI tool that parses Nmap, Nuclei, Nikto, and Metasploit console output into
  structured findings. Matches CVEs against a built-in offline knowledge
- base, optionally enriches with live CVSS scores from NVD, and generates
- PDF / JSON / text reports with concrete remediation advice.
+ base, optionally enriches with NVD, CISA KEV, and ExploitDB data, and
+ generates PDF / JSON / text reports with concrete remediation advice.

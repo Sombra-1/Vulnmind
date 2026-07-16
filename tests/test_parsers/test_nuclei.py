@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import json
+import pytest
+
 from vulnmind.parsers import detect_and_parse
 from vulnmind.parsers.nuclei import NucleiParser
 
@@ -23,6 +26,7 @@ def test_nuclei_trusts_classification_cves_and_target_fields():
     assert finding.protocol == "tcp"
     assert finding.service == "http"
     assert finding.priority == "critical"
+    assert finding.confidence == "scanner-reported"
     assert finding.cve_ids == ["CVE-2021-41773"]
     assert finding.cvss_score == 7.5
     assert finding.suggested_commands == [
@@ -68,3 +72,40 @@ def test_nuclei_can_parse_go_style_json_keys():
     assert findings[0].port == 443
     assert findings[0].priority == "medium"
     assert findings[0].cve_ids == ["CVE-2024-12345"]
+
+
+@pytest.mark.parametrize("malformed_target", ["http://[::1", "http://[not-ip]/x"])
+def test_nuclei_malformed_bracketed_targets_fall_back_without_crashing(
+    malformed_target,
+):
+    content = (
+        '{"template-id":"malformed-target","info":{"name":"Result",'
+        '"severity":"low"},"matched-at":'
+        f'{__import__("json").dumps(malformed_target)},'
+        '"host":"fallback.example"}'
+    )
+
+    findings = NucleiParser().parse(FIXTURES / "malformed.jsonl", content)
+
+    assert len(findings) == 1
+    assert findings[0].host == "fallback.example"
+
+
+@pytest.mark.parametrize("invalid_score", [True, float("nan"), float("inf"), 10**400])
+def test_nuclei_rejects_non_finite_or_oversized_cvss_without_crashing(
+    invalid_score,
+):
+    content = json.dumps({
+        "template-id": "invalid-cvss",
+        "info": {
+            "name": "Invalid score",
+            "severity": "medium",
+            "classification": {"cvss-score": invalid_score},
+        },
+        "matched-at": "https://target.example/",
+    })
+
+    findings = NucleiParser().parse(FIXTURES / "invalid_cvss.jsonl", content)
+
+    assert len(findings) == 1
+    assert findings[0].cvss_score is None

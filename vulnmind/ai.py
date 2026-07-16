@@ -59,7 +59,12 @@ DELAY_BETWEEN_REQUESTS = 60.0 / REQUESTS_PER_MINUTE  # 2.4 seconds
 console = Console()
 
 
-def enrich_findings(findings: list, cfg, deep: bool = False) -> list:
+def enrich_findings(
+    findings: list,
+    cfg,
+    deep: bool = False,
+    quiet: bool = False,
+) -> list:
     """
     Enrich a list of findings with AI analysis.
 
@@ -85,7 +90,21 @@ def enrich_findings(findings: list, cfg, deep: bool = False) -> list:
 
     if len(findings) == 1:
         # Single finding — no progress bar, just enrich it
-        return [_enrich_one(findings[0], api_key, model, deep)]
+        return [_enrich_one(findings[0], api_key, model, deep, quiet=quiet)]
+
+    if quiet:
+        enriched = []
+        for i, finding in enumerate(findings):
+            if i > 0:
+                time.sleep(DELAY_BETWEEN_REQUESTS)
+            enriched.append(_enrich_one(
+                finding,
+                api_key,
+                model,
+                deep,
+                quiet=True,
+            ))
+        return enriched
 
     # Multiple findings — show a progress bar
     enriched = []
@@ -107,7 +126,14 @@ def enrich_findings(findings: list, cfg, deep: bool = False) -> list:
     return enriched
 
 
-def _enrich_one(finding: Finding, api_key: str, model: str, deep: bool) -> Finding:
+def _enrich_one(
+    finding: Finding,
+    api_key: str,
+    model: str,
+    deep: bool,
+    *,
+    quiet: bool = False,
+) -> Finding:
     """
     Enrich a single finding with AI analysis.
 
@@ -120,18 +146,22 @@ def _enrich_one(finding: Finding, api_key: str, model: str, deep: bool) -> Findi
         data = _parse_response(response_text)
         return _apply_enrichment(finding, data)
     except requests.exceptions.ConnectionError:
-        console.print(
-            f"[yellow]! Could not reach Groq API (no internet?). "
-            f"Showing raw findings for {finding.host}:{finding.port}[/yellow]"
-        )
+        if not quiet:
+            console.print(
+                f"[yellow]! Could not reach Groq API (no internet?). "
+                f"Showing raw findings for {finding.host}:{finding.port}[/yellow]"
+            )
         return finding
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
-            console.print("[red]! Invalid Groq API key. Run: vulnmind config set-key <key>[/red]")
-        elif e.response.status_code == 429:
-            console.print("[yellow]! Groq rate limit hit. Results may be partial.[/yellow]")
-        else:
-            console.print(f"[yellow]! Groq API error ({e.response.status_code}) for {finding.host}:{finding.port}[/yellow]")
+        if not quiet:
+            status = getattr(e.response, "status_code", None)
+            if status == 401:
+                console.print("[red]! Invalid Groq API key. Run: vulnmind config set-key <key>[/red]")
+            elif status == 429:
+                console.print("[yellow]! Groq rate limit hit. Results may be partial.[/yellow]")
+            else:
+                label = status if status is not None else "unknown status"
+                console.print(f"[yellow]! Groq API error ({label}) for {finding.host}:{finding.port}[/yellow]")
         return finding
     except Exception:
         # Catch-all: parsing failures, timeouts, unexpected responses
@@ -281,29 +311,67 @@ def _apply_enrichment(finding: Finding, data: dict) -> Finding:
       (original) or this function (enrichment). Mutation makes that trail
       invisible.
     """
-    if not data:
+    if not isinstance(data, dict) or not data:
         return finding
 
     # Validate priority — only accept known values
     valid_priorities = {"critical", "high", "medium", "low"}
-    priority = data.get("priority", "").lower()
+    raw_priority = data.get("priority", "")
+    priority = raw_priority.lower() if isinstance(raw_priority, str) else ""
     if priority not in valid_priorities:
         priority = finding.priority  # keep existing or None
 
     # Validate false_positive_likelihood
     valid_fp = {"low", "medium", "high"}
-    fp_likelihood = data.get("false_positive_likelihood", "").lower()
+    raw_fp = data.get("false_positive_likelihood", "")
+    fp_likelihood = raw_fp.lower() if isinstance(raw_fp, str) else ""
     if fp_likelihood not in valid_fp:
         fp_likelihood = finding.false_positive_likelihood
 
+    commands = _validated_string_list(
+        data.get("suggested_commands"),
+        finding.suggested_commands,
+    )
+    modules = _validated_string_list(
+        data.get("metasploit_modules"),
+        finding.metasploit_modules,
+    )
+
     return replace(
         finding,
-        ai_explanation=data.get("explanation") or finding.ai_explanation,
+        ai_explanation=_validated_text(data.get("explanation"), finding.ai_explanation),
         priority=priority,
-        priority_reason=data.get("priority_reason") or finding.priority_reason,
-        suggested_commands=data.get("suggested_commands") or finding.suggested_commands,
-        metasploit_modules=data.get("metasploit_modules") or finding.metasploit_modules,
+        priority_reason=_validated_text(data.get("priority_reason"), finding.priority_reason),
+        suggested_commands=commands,
+        metasploit_modules=modules,
         false_positive_likelihood=fp_likelihood,
-        false_positive_reason=data.get("false_positive_reason") or finding.false_positive_reason,
-        remediation=data.get("remediation") or finding.remediation,
+        false_positive_reason=_validated_text(
+            data.get("false_positive_reason"),
+            finding.false_positive_reason,
+        ),
+        remediation=_validated_text(data.get("remediation"), finding.remediation),
     )
+
+
+def _validated_text(value, fallback):
+    """Keep model output from changing documented scalar field types."""
+    if not isinstance(value, str):
+        return fallback
+    cleaned = value.strip()
+    return cleaned[:4000] if cleaned else fallback
+
+
+def _validated_string_list(value, fallback: list) -> list:
+    """Return a bounded list[str], preserving existing values on bad output."""
+    if not isinstance(value, list):
+        return list(fallback or [])
+    cleaned = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if item and item not in cleaned:
+            cleaned.append(item[:2000])
+        if len(cleaned) >= 20:
+            break
+    return cleaned or list(fallback or [])

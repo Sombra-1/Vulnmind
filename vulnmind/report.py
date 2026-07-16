@@ -276,6 +276,7 @@ def _build_finding_section(finding, styles: dict) -> list:
         f"Service: {finding.service or 'unknown'}",
         f"Tool: {finding.source_tool}",
         f"Priority: {priority.upper()}",
+        f"Confidence: {(finding.confidence or 'weak').replace('-', ' ').title()}",
     ]
     if finding.cvss_score is not None:
         meta_parts.append(f"CVSS Score: {finding.cvss_score:.1f}")
@@ -287,6 +288,26 @@ def _build_finding_section(finding, styles: dict) -> list:
     for part in meta_parts:
         elements.append(Paragraph(safe_text(part), styles["meta_field"]))
     elements.append(Spacer(1, 0.15 * inch))
+
+    intel_labels = []
+    if finding.actively_exploited:
+        intel_labels.append("Known Exploited CVE — CISA KEV")
+    if finding.exploit_available:
+        intel_labels.append("Public Exploit Reference")
+    if finding.metasploit_available:
+        intel_labels.append("Metasploit Module")
+    if intel_labels:
+        elements.append(Paragraph("Threat Intelligence", styles["h2"]))
+        elements.append(Paragraph(
+            safe_text(" · ".join(intel_labels)),
+            styles["body"],
+        ))
+        for reference in (finding.exploit_references or [])[:5]:
+            elements.append(Paragraph(
+                safe_text(f"Source: {reference}"),
+                styles["meta_field"],
+            ))
+        elements.append(Spacer(1, 0.15 * inch))
 
     # AI Explanation
     if finding.ai_explanation:

@@ -1,16 +1,15 @@
 # VulnMind
 
 [![CI](https://github.com/Sombra-1/vulnmind/actions/workflows/ci.yml/badge.svg)](https://github.com/Sombra-1/vulnmind/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/vulnmind.svg)](https://pypi.org/project/vulnmind/)
-[![Python](https://img.shields.io/pypi/pyversions/vulnmind.svg)](https://pypi.org/project/vulnmind/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Security scan analyzer for pentesters. Parse nmap, Nuclei, nikto, and Metasploit console output into structured findings with CVE matches, live CVSS scores from NVD, priority ratings, remediation advice, suggested commands, and Metasploit modules — instantly, mostly offline, no API keys required by default.
+Security scan analyzer for pentesters. Parse nmap, Nuclei, nikto, and Metasploit console output into structured findings with explicit match confidence, CVE/CVSS context, CISA Known Exploited Vulnerabilities (KEV), public ExploitDB references, remediation advice, suggested commands, and Metasploit modules. Finding analysis is offline by default and requires no API key; normal text output may separately check GitHub Releases for an update.
 
 VulnMind is not a scanner replacement. It turns scanner output into prioritized, explainable findings you can review, pipe to JSON, or export as a PDF report.
 
 ```
-vulnmind analyze scan.xml
+vulnmind analyze scan.xml --deep
 ```
 
 ```
@@ -18,8 +17,10 @@ VulnMind BASIC  ·  1 critical  2 high  2 medium  0 low  (5 total)
 
   CRITICAL  http-vuln-cve2021-41773 on 192.168.1.10:80
   Target: 192.168.1.10:80  [http]
-  CVEs:   CVE-2021-41773, CVE-2021-42013
-  Why critical: Matched offline KB entry for 'apache' — known vulnerable service with 2 associated CVE(s).
+  Confidence: Scanner Reported
+  CVEs:   CVE-2021-41773
+  Threat intel: Known Exploited CVE — CISA KEV · Public Exploit Reference · Metasploit Module
+  Why critical: Apache 2.4.49 path-traversal / RCE — trivially exploitable and widely weaponised.
 
   Apache 2.4.49 has a path traversal and remote code execution
   vulnerability. Widely exploited in the wild.
@@ -42,16 +43,28 @@ VulnMind BASIC  ·  1 critical  2 high  2 medium  0 low  (5 total)
 
 ## Install
 
+The recommended install uses pipx, which keeps VulnMind in an isolated environment:
+
 ```bash
-pip install vulnmind
+pipx install "vulnmind @ https://github.com/Sombra-1/vulnmind/archive/refs/tags/v0.6.0.tar.gz"
 ```
+
+Or use pip inside a virtual environment:
+
+```bash
+python -m venv .venv
+./.venv/bin/python -m pip install "vulnmind @ https://github.com/Sombra-1/vulnmind/archive/refs/tags/v0.6.0.tar.gz"
+```
+
+VulnMind is currently distributed through GitHub Releases rather than PyPI.
 
 Or from source:
 
 ```bash
 git clone https://github.com/sombra-1/vulnmind
 cd vulnmind
-pip install -e .
+python -m venv .venv
+./.venv/bin/python -m pip install -e .
 ```
 
 **Supported distros:** Kali Linux, Ubuntu, Arch Linux, Parrot OS, BlackArch
@@ -100,14 +113,16 @@ vulnmind scan target.local -p 22,80,443 --nmap-args "-T4 -Pn"
 Requires the `nmap` binary on PATH. VulnMind prints an authorisation notice
 before every scan — only run against systems you own or have permission to test.
 
-### Deep mode — live CVE lookups from NVD
+### Deep mode — NVD + exploit intelligence
 
 ```bash
-# fetch official CVSS scores and authoritative CVE descriptions from nvd.nist.gov
+# refresh NVD CVSS data, CISA KEV, and ExploitDB references
 vulnmind analyze scan.xml --deep
 ```
 
-`--deep` pulls each CVE from the NVD API 2.0, populates `cvss_score`, and can **lift a finding's priority** if the highest associated CVSS is more severe than the offline KB suggested. Results are cached for 30 days at `~/.vulnmind/cache/nvd/`. No API key required.
+`--deep` pulls each CVE from the NVD API 2.0, populates `cvss_score`, and can **lift a finding's priority** when the official CVSS is more severe than the offline KB suggested. It also refreshes the official CISA KEV catalog and ExploitDB CVE index. NVD results are cached for 30 days; CISA KEV for 24 hours; and ExploitDB for seven days under `~/.vulnmind/cache/`.
+
+Exploit signals are deliberately annotation-only. A public exploit reference or Metasploit module does not prove that the scanned target is vulnerable and never raises priority by itself. `actively_exploited: true` is emitted only for an exact CVE match in CISA KEV.
 
 ### AI enrichment (free Groq API key)
 
@@ -137,6 +152,28 @@ vulnmind analyze scan.xml --enrich --report pdf --output pentest_report.pdf
 vulnmind analyze scan.xml --format json > findings.json
 ```
 
+Exploit-intelligence fields are always present with stable types, even when no cache or network data is available:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `confidence` | string | `confirmed`, `scanner-reported`, `strong`, or `weak` |
+| `actively_exploited` | boolean | An associated CVE is in the official CISA KEV catalog |
+| `exploit_available` | boolean | ExploitDB has an exact associated-CVE reference |
+| `metasploit_available` | boolean | A Metasploit module is associated with the finding |
+| `exploit_confidence` | string | Best source: `cisa-kev`, `metasploit-module`, `exploitdb-cve`, or `none` |
+| `exploit_references` | array of strings | At most five supporting source URLs or module IDs |
+
+### Updates
+
+Normal text-mode runs make a short GitHub Releases check at most once per day and show a notice when a newer version exists. The check overlaps analysis and waits no more than a brief bounded grace period at the end. JSON mode never checks. Disable or re-enable automatic checks with `vulnmind config set-update-checks off|on`, or set `VULNMIND_UPDATE_CHECKS=off`. To check or update explicitly:
+
+```bash
+vulnmind update --check-only
+vulnmind update
+```
+
+Pip and pipx installations update from the exact SemVer release tag returned by GitHub. Source checkouts and system-package installations are not modified automatically; the command prints safe, installation-specific instructions instead.
+
 ---
 
 ## Supported formats
@@ -158,7 +195,10 @@ VulnMind auto-detects the format — no need to specify it.
 
 - Parse **nmap** XML and text output, **Nuclei** JSONL, **nikto** output, **Metasploit** console logs
 - Offline CVE knowledge base — instant, no internet required
-- **Live NVD lookups** in `--deep` mode — official CVSS scores and descriptions from nvd.nist.gov
+- **Live NVD lookups** in `--deep` mode — official CVSS scores from nvd.nist.gov
+- **CISA KEV intelligence** — distinguishes CVEs known to be exploited in the wild
+- **ExploitDB references** — exact-CVE public exploit availability, kept separate from KEV
+- Explicit evidence confidence: confirmed, scanner-reported, strong product/version match, or weak service guidance
 - Trust scanner-reported CVEs from Nuclei classification metadata without inventing CVEs from template names
 - 50+ service types detected (ssh, ftp, http, smb, rdp, mysql, redis, mongodb, elasticsearch, smtp, ldap, snmp, vnc, docker, kubernetes, jenkins, and more)
 - Accurate product & version matching — strong vs weak match confidence, no more false-positive CVE merges from unrelated vendors
@@ -170,6 +210,7 @@ VulnMind auto-detects the format — no need to specify it.
 - Multi-file analysis with automatic deduplication
 - PDF report generation (cover page, executive summary table, per-finding detail sections)
 - JSON output for piping and CI integration
+- Bounded GitHub release notices and an explicit `vulnmind update` command
 
 ---
 
@@ -178,7 +219,7 @@ VulnMind auto-detects the format — no need to specify it.
 ```
 vulnmind analyze <files> [OPTIONS]
 
-  --deep            Live CVE lookup against the NVD API (populates cvss_score, may lift priority)
+  --deep            Refresh NVD, CISA KEV, and ExploitDB intelligence
   --enrich          AI analysis via Groq API (free tier)
   --report pdf      Generate a PDF report
   --output PATH     Output filename for the PDF (default: vulnmind_report.pdf)
@@ -191,8 +232,11 @@ vulnmind scan <target> [OPTIONS]          # new in v0.4.0 — runs nmap for you
   --deep / --enrich / --report / --output / --format   (same as analyze)
 
 vulnmind config set-key <key>   Save your Groq API key
+vulnmind config set-update-checks off|on
 vulnmind config show            Show current config
 vulnmind config clear           Remove all saved config
+
+vulnmind update [--check-only]  Check/install the latest GitHub release
 ```
 
 ---
@@ -235,6 +279,15 @@ then smoke-tests the installed `vulnmind` entry point.
 
 ## Changelog
 
+### v0.6.0
+- **Exploit intelligence** — exact-CVE lookups against the official CISA KEV catalog and ExploitDB CSV, with offline-first caches, stale-cache fallback, bounded downloads, and silent network failure handling.
+- **Explicit confidence model** — every finding reports `confirmed`, `scanner-reported`, `strong`, or `weak` evidence confidence.
+- **Stable JSON signals** — added `actively_exploited`, `exploit_available`, `metasploit_available`, `exploit_confidence`, and bounded `exploit_references` fields with stable types.
+- **Careful risk wording** — CISA KEV, public exploit references, and Metasploit modules render as separate terminal/PDF signals; exploit availability alone never raises priority.
+- **Safe updates** — release checks are bounded and optional, failed checks back off for 24 hours, SemVer prereleases compare correctly, and `vulnmind update` installs exact GitHub tag archives for pip/pipx while protecting source/system-package installs.
+- **Bug fixes** — fixed cross-file deduplication, ignored explicit nmap `NOT VULNERABLE` results, kept JSON clean during enrichment/errors, validated optional-enrichment field types, and prevented unsupported weak KB fallbacks from inflating priority.
+- **Expanded regression suite** — coverage for data-source caches/parsing/download limits, integration policy, updater safety, JSON schema, PDF rendering, and parser/matcher regressions.
+
 ### v0.5.0
 - **Nuclei JSONL support** — parses Nuclei findings from `-jsonl` output, including severity, host/port, matched URL, extracted results, reproduction curl command, CVSS score, and CVEs from `info.classification.cve-id`.
 - **CVE accuracy guard** — Nuclei parser trusts explicit classification CVEs but does not invent CVEs from template IDs or names.
@@ -242,9 +295,9 @@ then smoke-tests the installed `vulnmind` entry point.
 - **Test suite and CI foundation** — pytest coverage for matcher safeguards, nmap/nikto/Metasploit/Nuclei parser fixtures, mocked NVD cache/fetch/rate-limit behavior, and GitHub Actions on Python 3.10, 3.11, and 3.12.
 - **Development docs** — added `dev-requirements.txt` and local pytest setup instructions for contributors.
 
-### v0.4.1 (stable)
-- **Packaging fix for PyPI** — `setup.py` now declares `package_data` so the offline CVE knowledge base (`vulnmind/knowledge/services.json`) is bundled into the built wheel. Without this, `pip install vulnmind` would have crashed on first use.
-- License metadata added: `license="MIT"` + MIT classifier so PyPI displays the licence correctly.
+### v0.4.1
+- **Packaging fix** — `setup.py` declares `package_data` so the offline CVE knowledge base (`vulnmind/knowledge/services.json`) is bundled into built wheels.
+- License metadata added: `license="MIT"` + MIT classifier.
 - No behavioural changes versus v0.4.0.
 
 ### v0.4.0

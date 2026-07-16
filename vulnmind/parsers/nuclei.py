@@ -14,6 +14,8 @@ Accuracy rules:
 from __future__ import annotations
 
 import json
+import ipaddress
+import math
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -163,6 +165,7 @@ class NucleiParser(BaseParser):
             cve_ids=cve_ids,
             cvss_score=cvss_score,
             priority=priority,
+            confidence="scanner-reported",
             suggested_commands=[curl_command] if curl_command else [],
             false_positive_likelihood=fp_likelihood,
             false_positive_reason=fp_reason,
@@ -208,13 +211,13 @@ def _extract_classification_cves(classification: dict) -> list[str]:
 
 
 def _parse_cvss(value: Any) -> Optional[float]:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     try:
         score = float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
-    if 0.0 <= score <= 10.0:
+    if math.isfinite(score) and 0.0 <= score <= 10.0:
         return score
     return None
 
@@ -287,16 +290,16 @@ def _parse_target_string(value: str) -> dict:
     if not value:
         return {"host": "", "port": None, "scheme": ""}
 
-    parsed = urlparse(value)
-    if not parsed.netloc and "://" not in value:
-        parsed = urlparse(f"//{value}")
-
-    host = parsed.hostname or ""
-    port = None
     try:
+        parsed = urlparse(value)
+        if not parsed.netloc and "://" not in value:
+            parsed = urlparse(f"//{value}")
+        host = parsed.hostname or ""
+        if parsed.netloc.startswith("["):
+            ipaddress.IPv6Address(host)
         port = parsed.port
-    except ValueError:
-        port = None
+    except (ipaddress.AddressValueError, ValueError):
+        return {"host": "", "port": None, "scheme": ""}
 
     return {"host": host, "port": port, "scheme": (parsed.scheme or "").lower()}
 

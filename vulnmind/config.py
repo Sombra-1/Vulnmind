@@ -55,6 +55,8 @@ class Config:
             except (json.JSONDecodeError, OSError):
                 # Corrupt or unreadable config — start fresh rather than crashing
                 data = {}
+            if not isinstance(data, dict):
+                data = {}
         else:
             data = {}
         return cls(data)
@@ -110,6 +112,18 @@ class Config:
     def model(self) -> str:
         """AI model to use. Default is Groq's flagship free-tier model (70B)."""
         return self.get("model", "llama-3.3-70b-versatile")
+
+    @property
+    def update_checks_enabled(self) -> bool:
+        """Whether normal text output may check GitHub for a new release."""
+        value = self.get("update_checks", True)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in {
+                "0", "false", "off", "no", "disabled",
+            }
+        return bool(value)
 
     # ------------------------------------------------------------------
     # Display helper (for `vulnmind config show`)

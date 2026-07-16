@@ -33,3 +33,8 @@ jobs:
 
       - name: Smoke test CLI entry point
         run: vulnmind --version
+
+      - name: Build and inspect wheel
+        run: |
+          python -m build --wheel
+          python -c "import glob, zipfile; wheel = glob.glob('dist/*.whl')[0]; names = set(zipfile.ZipFile(wheel).namelist()); required = {'vulnmind/knowledge/services.json', 'vulnmind/enrichers/kev.py', 'vulnmind/enrichers/exploitdb.py', 'vulnmind/enrichers/intelligence.py'}; missing = required - names; assert not missing, f'missing wheel files: {sorted(missing)}'"

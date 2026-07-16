@@ -42,7 +42,11 @@ LINE_RE = re.compile(
 USE_RE = re.compile(r"(?:^|\s)use\s+(\S+/\S+)")
 
 # Lines like: msf6 auxiliary(scanner/smb/smb_ms17_010) > run
-MODULE_CONTEXT_RE = re.compile(r"msf\d?\s+\w+\(([^)]+)\)\s*>")
+MODULE_CONTEXT_RE = re.compile(
+    r"\bmsf\d*\s+(exploit|auxiliary|post|payload|encoder|nop|evasion)"
+    r"\(([^)]+)\)\s*>",
+    re.IGNORECASE,
+)
 
 # Vulnerability / noteworthy keywords — tell us [*] lines that matter
 VULN_KEYWORDS = [
@@ -90,12 +94,16 @@ class MetasploitParser(BaseParser):
             # Track the current active module — used to attribute findings
             use_match = USE_RE.search(line)
             if use_match:
-                current_module = use_match.group(1)
+                candidate = use_match.group(1).strip()
+                if _valid_module_path(candidate):
+                    current_module = candidate
                 continue
 
             ctx_match = MODULE_CONTEXT_RE.search(line)
             if ctx_match:
-                current_module = ctx_match.group(1)
+                candidate = f"{ctx_match.group(1).lower()}/{ctx_match.group(2)}"
+                if _valid_module_path(candidate):
+                    current_module = candidate
                 continue
 
             match = LINE_RE.match(line.strip())
@@ -108,7 +116,12 @@ class MetasploitParser(BaseParser):
             message = match.group("message").strip()
 
             low = message.lower()
-            cves = [c.upper() for c in CVE_PATTERN.findall(message)]
+            cves = list(dict.fromkeys(
+                c.upper() for c in CVE_PATTERN.findall(message)
+            ))
+
+            if _is_explicit_negative(message):
+                continue
 
             # Skip scan progress and failed attempts
             if marker == "*" and not _is_noteworthy(message) and not cves:
@@ -130,6 +143,7 @@ class MetasploitParser(BaseParser):
                 port = None
 
             priority = _priority_from_message(marker, message, cves)
+            confidence = _confidence_from_message(marker, message, cves)
 
             title = message[:70] + ("..." if len(message) > 70 else "")
             finding_id = make_finding_id(host, port, title)
@@ -154,6 +168,7 @@ class MetasploitParser(BaseParser):
                 raw_evidence=line,
                 cve_ids=cves,
                 priority=priority,
+                confidence=confidence,
                 metasploit_modules=modules,
             ))
 
@@ -166,18 +181,62 @@ def _is_noteworthy(message: str) -> bool:
     return any(kw in low for kw in VULN_KEYWORDS)
 
 
+def _valid_module_path(value: str) -> bool:
+    """Accept runnable Metasploit module paths with an explicit module type."""
+    return bool(re.fullmatch(
+        r"(?:exploit|auxiliary|post|payload|encoder|nop|evasion)/[\w./-]+",
+        value,
+        re.IGNORECASE,
+    ))
+
+
+def _is_explicit_negative(message: str) -> bool:
+    """Skip explicit negative, zero-result, and failed Metasploit outcomes."""
+    if not isinstance(message, str):
+        return True
+    return bool(re.search(
+        r"\bNOT\b.{0,30}\b(?:VULNERABLE|EXPLOITABLE|AFFECTED)\b|"
+        r"\bNO\s+(?:VALID\s+)?CREDENTIALS?\s+(?:WERE\s+)?(?:OBTAINED|FOUND)\b|"
+        r"\b0\s+(?:VALID\s+)?CREDENTIALS?\s+(?:OBTAINED|FOUND)\b|"
+        r"\b(?:NO|0)\s+SESSIONS?\s+OPENED\b|"
+        r"\b(?:LOGIN|AUTHENTICATION|EXPLOITATION)\s+FAILED\b|"
+        r"\bTARGET\s+(?:APPEARS\s+)?SAFE\b",
+        message,
+        re.IGNORECASE,
+    ))
+
+
 def _priority_from_message(marker: str, message: str, cves: list) -> str:
     """Derive a default priority from the marker, message keywords, and CVEs."""
     low = message.lower()
-    if "vulnerable" in low or "successful" in low or "login successful" in low:
-        return "high"
     if "shell" in low or "meterpreter" in low or "rce" in low or "backdoor" in low:
         return "critical"
+    if "vulnerable" in low or "successful" in low or "login successful" in low:
+        return "high"
     if cves:
         return "high"
     if marker == "+":
         return "high"
     return "medium"
+
+
+def _confidence_from_message(marker: str, message: str, cves: list) -> str:
+    """Reserve confirmed for explicit successful exploitation evidence."""
+    low = message.lower()
+    explicit_success = (
+        "login successful" in low
+        or "credentials obtained" in low
+        or (
+            "session" in low
+            and "opened" in low
+            and ("meterpreter" in low or "shell" in low)
+        )
+    )
+    if marker == "+" and explicit_success:
+        return "confirmed"
+    if cves or marker == "+" or _is_noteworthy(message):
+        return "scanner-reported"
+    return "weak"
 
 
 def _service_from_port(port: Optional[int]) -> Optional[str]:
