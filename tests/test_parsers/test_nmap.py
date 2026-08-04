@@ -305,3 +305,27 @@ Nmap done: 1 IP address (1 host up) scanned
     assert len(findings) == 1
     assert findings[0].host == "target.example"
     assert findings[0].port == 8080
+
+
+def test_ipv6_xml_and_text_variants_share_a_finding_id(tmp_path):
+    xml_path = tmp_path / "scan.xml"
+    text_path = tmp_path / "scan.nmap"
+    xml_path.write_text("""<?xml version="1.0"?>
+<nmaprun><host>
+  <address addr="2001:0db8::1" addrtype="ipv6"/>
+  <ports><port protocol="tcp" portid="22">
+    <state state="open"/>
+    <service name="ssh"/>
+  </port></ports>
+</host></nmaprun>
+""")
+    text_path.write_text("""Nmap scan report for 2001:db8::1
+Host is up.
+PORT   STATE SERVICE
+22/tcp open  ssh
+""")
+
+    findings = load_files([xml_path, text_path])
+
+    assert len(findings) == 1
+    assert findings[0].port == 22
