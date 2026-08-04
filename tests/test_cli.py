@@ -153,3 +153,25 @@ def test_disabled_automatic_update_checks_do_not_start_network_thread(monkeypatc
     ])
 
     assert result.exit_code == 0, result.output
+
+
+def test_text_output_brackets_ipv6_target_with_port(monkeypatch, tmp_path):
+    scan = tmp_path / "ipv6.jsonl"
+    scan.write_text(json.dumps({
+        "template-id": "ipv6-target",
+        "info": {"name": "IPv6 result", "severity": "low"},
+        "matched-at": "https://[2001:db8::1]:8443/",
+    }))
+    monkeypatch.setattr("vulnmind.cli._exploit_intel_enrich", _no_live_intel)
+    monkeypatch.setattr(
+        "vulnmind.cli.Config.load",
+        lambda: SimpleNamespace(
+            groq_api_key=None,
+            update_checks_enabled=False,
+        ),
+    )
+
+    result = CliRunner().invoke(cli, ["analyze", str(scan)])
+
+    assert result.exit_code == 0, result.output
+    assert "[2001:db8::1]:8443" in result.output

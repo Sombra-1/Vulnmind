@@ -40,6 +40,8 @@ from reportlab.platypus import (
     HRFlowable,
 )
 
+from vulnmind.parsers.base import format_target
+
 
 # ---------------------------------------------------------------------------
 # Text sanitization — must be applied to ALL strings before Paragraph()
@@ -270,9 +272,8 @@ def _build_finding_section(finding, styles: dict) -> list:
     elements.append(Spacer(1, 0.1 * inch))
 
     # Metadata row
-    port_str = f":{finding.port}" if finding.port else ""
     meta_parts = [
-        f"Host: {finding.host}{port_str}",
+        f"Host: {format_target(finding.host, finding.port)}",
         f"Service: {finding.service or 'unknown'}",
         f"Tool: {finding.source_tool}",
         f"Priority: {priority.upper()}",

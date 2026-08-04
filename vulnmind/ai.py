@@ -43,7 +43,7 @@ import requests
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
-from vulnmind.parsers.base import Finding
+from vulnmind.parsers.base import Finding, format_target
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
@@ -119,7 +119,10 @@ def enrich_findings(
         for i, finding in enumerate(findings):
             if i > 0:
                 time.sleep(DELAY_BETWEEN_REQUESTS)
-            progress.update(task, description=f"Analyzing {finding.host}:{finding.port}")
+            progress.update(
+                task,
+                description=f"Analyzing {format_target(finding.host, finding.port)}",
+            )
             enriched.append(_enrich_one(finding, api_key, model, deep))
             progress.advance(task)
 
@@ -149,7 +152,8 @@ def _enrich_one(
         if not quiet:
             console.print(
                 f"[yellow]! Could not reach Groq API (no internet?). "
-                f"Showing raw findings for {finding.host}:{finding.port}[/yellow]"
+                f"Showing raw findings for "
+                f"{format_target(finding.host, finding.port)}[/yellow]"
             )
         return finding
     except requests.exceptions.HTTPError as e:
@@ -161,7 +165,10 @@ def _enrich_one(
                 console.print("[yellow]! Groq rate limit hit. Results may be partial.[/yellow]")
             else:
                 label = status if status is not None else "unknown status"
-                console.print(f"[yellow]! Groq API error ({label}) for {finding.host}:{finding.port}[/yellow]")
+                console.print(
+                    f"[yellow]! Groq API error ({label}) for "
+                    f"{format_target(finding.host, finding.port)}[/yellow]"
+                )
         return finding
     except Exception:
         # Catch-all: parsing failures, timeouts, unexpected responses

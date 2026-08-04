@@ -74,6 +74,27 @@ def test_nuclei_can_parse_go_style_json_keys():
     assert findings[0].cve_ids == ["CVE-2024-12345"]
 
 
+@pytest.mark.parametrize(
+    ("target", "expected_port"),
+    [
+        ("2001:db8::1", None),
+        ("https://[2001:0db8::1]:8443/path", 8443),
+    ],
+)
+def test_nuclei_parses_bare_and_bracketed_ipv6(target, expected_port):
+    content = json.dumps({
+        "template-id": "ipv6-target",
+        "info": {"name": "IPv6 result", "severity": "low"},
+        "matched-at": target,
+    })
+
+    findings = NucleiParser().parse(FIXTURES / "ipv6.jsonl", content)
+
+    assert len(findings) == 1
+    assert findings[0].host == "2001:db8::1"
+    assert findings[0].port == expected_port
+
+
 @pytest.mark.parametrize("malformed_target", ["http://[::1", "http://[not-ip]/x"])
 def test_nuclei_malformed_bracketed_targets_fall_back_without_crashing(
     malformed_target,

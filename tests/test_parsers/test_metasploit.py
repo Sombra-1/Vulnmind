@@ -70,3 +70,18 @@ msf6 exploit(windows/smb/ms17_010_eternalblue) > run
         "exploit/windows/smb/ms17_010_eternalblue"
     ]
     assert findings[0].cve_ids == ["CVE-2017-0144"]
+
+
+def test_metasploit_parses_bracketed_and_bare_ipv6_targets():
+    content = """Metasploit Framework
+msf6 > use auxiliary/scanner/smb/smb_ms17_010
+[+] [2001:0db8::1]:445 - Host is VULNERABLE to CVE-2017-0144
+[+] 2001:db8::2 - Login Successful
+"""
+
+    findings = MetasploitParser().parse(FIXTURES / "ipv6_metasploit.txt", content)
+
+    assert [(finding.host, finding.port) for finding in findings] == [
+        ("2001:db8::1", 445),
+        ("2001:db8::2", None),
+    ]

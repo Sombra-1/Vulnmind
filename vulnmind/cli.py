@@ -21,6 +21,7 @@ from rich.panel import Panel
 from vulnmind import __version__
 from vulnmind.banner import render as render_banner
 from vulnmind.config import Config
+from vulnmind.parsers.base import format_target
 
 console = Console()
 
@@ -653,9 +654,9 @@ def display_finding_panel(finding):
 
     lines = []
 
-    port_str    = f":{finding.port}" if finding.port else ""
     service_str = f"  [{finding.service}]" if finding.service else ""
-    lines.append(f"[dim]Target:[/dim] [bold]{finding.host}{port_str}[/bold]{service_str}")
+    target = format_target(finding.host, finding.port)
+    lines.append(f"[dim]Target:[/dim] [bold]{target}[/bold]{service_str}")
     confidence = (finding.confidence or "weak").replace("-", " ").title()
     lines.append(f"[dim]Confidence:[/dim] [bold]{confidence}[/bold]")
 

@@ -291,12 +291,18 @@ def _parse_target_string(value: str) -> dict:
         return {"host": "", "port": None, "scheme": ""}
 
     try:
+        host = str(ipaddress.ip_address(value))
+        return {"host": host, "port": None, "scheme": ""}
+    except ValueError:
+        pass
+
+    try:
         parsed = urlparse(value)
         if not parsed.netloc and "://" not in value:
             parsed = urlparse(f"//{value}")
         host = parsed.hostname or ""
         if parsed.netloc.startswith("["):
-            ipaddress.IPv6Address(host)
+            host = str(ipaddress.IPv6Address(host))
         port = parsed.port
     except (ipaddress.AddressValueError, ValueError):
         return {"host": "", "port": None, "scheme": ""}

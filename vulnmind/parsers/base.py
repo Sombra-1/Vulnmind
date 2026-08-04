@@ -11,6 +11,7 @@ Two things live here:
 """
 
 import hashlib
+import ipaddress
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -157,8 +158,19 @@ def make_finding_id(host: str, port: Optional[int], title: str) -> str:
     Why only 12 chars? Long enough to be unique across any realistic scan,
     short enough to display in a table column.
     """
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
     raw = f"{host}{port}{title}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
+def format_target(host: str, port: Optional[int]) -> str:
+    """Format host and optional port without making IPv6 targets ambiguous."""
+    if port is None:
+        return host
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
 def make_timestamp() -> str:

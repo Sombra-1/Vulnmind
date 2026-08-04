@@ -24,6 +24,7 @@ attach the attacking module to the finding's metasploit_modules list.
 Result: cleaner, higher-signal findings from msfconsole logs.
 """
 
+import ipaddress
 import re
 from pathlib import Path
 from typing import Optional
@@ -34,8 +35,11 @@ CVE_PATTERN = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
 
 # [+] host:port - message  OR  [+] host - message  OR [*] host:port - message
 LINE_RE = re.compile(
-    r"^\[(?P<marker>[+*!])\]\s+(?P<host>[\d.]+|[a-zA-Z][\w.-]*)"
-    r"(?::(?P<port>\d+))?\s*-?\s*(?P<message>.+)$"
+    r"^\[(?P<marker>[+*!])\]\s+"
+    r"(?:\[(?P<bracketed_host>[^\]\s]+)\](?::(?P<bracketed_port>\d+))?"
+    r"|(?P<bare_ipv6>[0-9a-fA-F.]*:[0-9a-fA-F:.]*:[0-9a-fA-F:.]*)"
+    r"|(?P<host>[\d.]+|[a-zA-Z][\w.-]*)(?::(?P<port>\d+))?)"
+    r"\s*-?\s*(?P<message>.+)$"
 )
 
 # Lines like: msf6 > use auxiliary/scanner/smb/smb_ms17_010
@@ -111,9 +115,19 @@ class MetasploitParser(BaseParser):
                 continue
 
             marker = match.group("marker")
-            host = match.group("host")
-            port_str = match.group("port")
+            host = (
+                match.group("bracketed_host")
+                or match.group("bare_ipv6")
+                or match.group("host")
+            )
+            port_str = match.group("bracketed_port") or match.group("port")
             message = match.group("message").strip()
+
+            if ":" in host:
+                try:
+                    host = str(ipaddress.IPv6Address(host))
+                except ipaddress.AddressValueError:
+                    continue
 
             low = message.lower()
             cves = list(dict.fromkeys(
@@ -141,6 +155,8 @@ class MetasploitParser(BaseParser):
                 port = int(port_str) if port_str else None
             except ValueError:
                 port = None
+            if port is not None and not 0 < port <= 65535:
+                continue
 
             priority = _priority_from_message(marker, message, cves)
             confidence = _confidence_from_message(marker, message, cves)
