@@ -1,5 +1,7 @@
 # VulnMind
 
+![VulnMind — turn scanner output into prioritized, explainable security findings](docs/assets/vulnmind-banner.png)
+
 [![CI](https://github.com/Sombra-1/vulnmind/actions/workflows/ci.yml/badge.svg)](https://github.com/Sombra-1/vulnmind/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -7,6 +9,13 @@
 Security scan analyzer for pentesters. Parse nmap, Nuclei, nikto, and Metasploit console output into structured findings with explicit match confidence, CVE/CVSS context, CISA Known Exploited Vulnerabilities (KEV), public ExploitDB references, remediation advice, suggested commands, and Metasploit modules. Finding analysis is offline by default and requires no API key; normal text output may separately check GitHub Releases for an update.
 
 VulnMind is not a scanner replacement. It turns scanner output into prioritized, explainable findings you can review, pipe to JSON, or export as a PDF report.
+
+![VulnMind analyzing sanitized local scanner output](docs/assets/vulnmind-demo.gif)
+
+![Watch the VulnMind technical demo](docs/assets/video-thumbnail.png)
+
+The full-resolution video stays out of normal Git history. See the
+[reproducible demo package](tools/demo/README.md) to render and verify it.
 
 ```
 vulnmind analyze scan.xml --deep
@@ -188,6 +197,25 @@ Pip and pipx installations update from the exact SemVer release tag returned by 
 | Metasploit | Console log | `spool console.log` inside msfconsole |
 
 VulnMind auto-detects the format — no need to specify it.
+
+---
+
+## Verified media
+
+![Standard terminal analysis](docs/assets/terminal-analysis.png)
+
+![Confidence, CVE, KEV, exploit-reference, remediation, and module context](docs/assets/deep-intelligence.png)
+
+![Generated PDF report preview](docs/assets/pdf-report-preview.png)
+
+The screenshots above are generated from committed, sanitized loopback
+fixtures and the real CLI output.
+
+```bash
+tools/demo/prepare_demo.sh
+tools/demo/render_assets.sh
+tools/demo/verify_media.sh
+```
 
 ---
 

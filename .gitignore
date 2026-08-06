@@ -19,6 +19,7 @@ env/
 dist/
 *.whl
 *.tar.gz
+output/
 
 # IDE
 .vscode/
