@@ -70,13 +70,21 @@ VulnMind is currently distributed through GitHub Releases rather than PyPI.
 Or from source:
 
 ```bash
-git clone https://github.com/Sombra-1/vulnmind
+git clone https://github.com/sombra-1/vulnmind
 cd vulnmind
 python -m venv .venv
 ./.venv/bin/python -m pip install -e .
 ```
 
-Run one or more saved scanner-output files:
+**Supported distros:** Kali Linux, Ubuntu, Arch Linux, Parrot OS, BlackArch
+
+**Requirements:** Python 3.10+
+
+---
+
+## Usage
+
+### Basic — no setup required
 
 ```bash
 # nmap scan
@@ -128,9 +136,8 @@ Exploit signals are deliberately annotation-only. A public exploit reference or 
 ### AI enrichment (free Groq API key)
 
 ```bash
-# Nmap XML (recommended)
-nmap -sV -sC -oX scan.xml 192.0.2.10
-vulnmind analyze scan.xml
+# get a free key at console.groq.com
+vulnmind config set-key gsk_...
 
 # plain-English analysis + richer commands
 vulnmind analyze scan.xml --enrich
@@ -189,19 +196,28 @@ Pip and pipx installations update from the exact SemVer release tag returned by 
 | nikto | Text | `-o scan.txt` |
 | Metasploit | Console log | `spool console.log` inside msfconsole |
 
-VulnMind auto-detects formats from their content rather than trusting file
-extensions.
+VulnMind auto-detects the format — no need to specify it.
 
-## Example output
+---
+
+## Verified media
 
 ![Standard terminal analysis](docs/assets/terminal-analysis.png)
 
-![Offline CVE, priority, command, and module context](docs/assets/deep-intelligence.png)
+![Confidence, CVE, KEV, exploit-reference, remediation, and module context](docs/assets/deep-intelligence.png)
 
 ![Generated PDF report preview](docs/assets/pdf-report-preview.png)
 
-The screenshots above are rendered from
-`tools/demo/fixtures/sanitized-nmap.txt` and the real CLI output.
+The screenshots above are generated from committed, sanitized loopback
+fixtures and the real CLI output.
+
+```bash
+tools/demo/prepare_demo.sh
+tools/demo/render_assets.sh
+tools/demo/verify_media.sh
+```
+
+---
 
 ## Features
 
@@ -224,23 +240,7 @@ The screenshots above are rendered from
 - JSON output for piping and CI integration
 - Bounded GitHub release notices and an explicit `vulnmind update` command
 
-- Groq-powered explanations
-- Suggested command/module refinement
-- False-positive likelihood assessment
-
-Optional enrichment is assistive output, not a substitute for validating
-scanner evidence or applying professional judgment.
-
-## Media reproduction
-
-```bash
-tools/demo/prepare_demo.sh
-tools/demo/render_assets.sh
-tools/demo/verify_media.sh
-```
-
-Dependencies and exact output locations are documented in
-[`tools/demo/README.md`](tools/demo/README.md).
+---
 
 ## All flags
 
@@ -271,9 +271,9 @@ vulnmind update [--check-only]  Check/install the latest GitHub release
 
 ## Adding a parser
 
-1. Create `vulnmind/parsers/yourparser.py` and subclass `BaseParser`.
-2. Implement `can_parse()` and `parse()`.
-3. Register it in `vulnmind/parsers/__init__.py`.
+1. Create `vulnmind/parsers/yourparser.py`, subclass `BaseParser`
+2. Implement `can_parse()` and `parse()`
+3. Register in `vulnmind/parsers/__init__.py`
 
 ```python
 class MyParser(BaseParser):
@@ -281,7 +281,8 @@ class MyParser(BaseParser):
         return "MyTool v" in content_preview
 
     def parse(self, file_path, content):
-        return []
+        # return List[Finding]
+        ...
 ```
 
 Supported tools wanted: OpenVAS, Burp Suite, Nessus.
