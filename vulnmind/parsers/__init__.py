@@ -28,6 +28,7 @@ from pathlib import Path
 
 from vulnmind.parsers.base import ParseError
 from vulnmind.parsers.nmap import NmapParser
+from vulnmind.parsers.nuclei import NucleiParser
 from vulnmind.parsers.nikto import NiktoParser
 from vulnmind.parsers.metasploit import MetasploitParser
 
@@ -35,6 +36,7 @@ from vulnmind.parsers.metasploit import MetasploitParser
 # If two parsers both claim can_parse() = True, the first one wins.
 # Put more specific parsers before more general ones.
 REGISTERED_PARSERS = [
+    NucleiParser(),
     NmapParser(),
     NiktoParser(),
     MetasploitParser(),
@@ -58,14 +60,14 @@ def detect_and_parse(file_path: Path) -> list:
     # Read file content. Use errors='replace' to handle non-UTF8 bytes
     # (some nmap output can contain binary data in service version strings)
     content = file_path.read_text(encoding="utf-8", errors="replace")
-    content_preview = content[:200]
+    content_preview = content[:4096]
 
     for parser in REGISTERED_PARSERS:
         if parser.can_parse(file_path, content_preview):
             return parser.parse(file_path, content)
 
     # No parser matched — give the user a helpful error message
-    supported = "nmap XML (-oX), nmap text (-oN), Nikto text output"
+    supported = "nmap XML (-oX), nmap text (-oN), Nikto text, Metasploit console logs, Nuclei JSONL"
     raise ParseError(
         f"Could not detect file format for '{file_path.name}'.\n"
         f"Supported formats: {supported}.\n"

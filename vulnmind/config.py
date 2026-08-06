@@ -16,6 +16,7 @@ because our needs are minimal — just a handful of keys.
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -55,20 +56,41 @@ class Config:
             except (json.JSONDecodeError, OSError):
                 # Corrupt or unreadable config — start fresh rather than crashing
                 data = {}
+            if not isinstance(data, dict):
+                data = {}
         else:
             data = {}
         return cls(data)
 
     def save(self) -> None:
-        """Write current config to disk, creating the directory if needed."""
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        """Atomically write current config with owner-only permissions."""
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Restrict permissions: only the owner can read this file.
-        # This matters because it contains an API key.
-        CONFIG_FILE.touch(mode=0o600, exist_ok=True)
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(self._data, f, indent=2)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=CONFIG_FILE.parent,
+                prefix=f".{CONFIG_FILE.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                temp_path = Path(f.name)
+                os.chmod(temp_path, 0o600)
+                json.dump(self._data, f, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, CONFIG_FILE)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # Getters / Setters
@@ -108,8 +130,20 @@ class Config:
 
     @property
     def model(self) -> str:
-        """AI model to use. Default is Groq's fastest free-tier model."""
-        return self.get("model", "llama-3.1-8b-instant")
+        """AI model to use. Default is Groq's flagship free-tier model (70B)."""
+        return self.get("model", "llama-3.3-70b-versatile")
+
+    @property
+    def update_checks_enabled(self) -> bool:
+        """Whether normal text output may check GitHub for a new release."""
+        value = self.get("update_checks", True)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in {
+                "0", "false", "off", "no", "disabled",
+            }
+        return bool(value)
 
     # ------------------------------------------------------------------
     # Display helper (for `vulnmind config show`)

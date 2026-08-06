@@ -40,6 +40,8 @@ from reportlab.platypus import (
     HRFlowable,
 )
 
+from vulnmind.parsers.base import format_target
+
 
 # ---------------------------------------------------------------------------
 # Text sanitization — must be applied to ALL strings before Paragraph()
@@ -270,19 +272,43 @@ def _build_finding_section(finding, styles: dict) -> list:
     elements.append(Spacer(1, 0.1 * inch))
 
     # Metadata row
-    port_str = f":{finding.port}" if finding.port else ""
     meta_parts = [
-        f"Host: {finding.host}{port_str}",
+        f"Host: {format_target(finding.host, finding.port)}",
         f"Service: {finding.service or 'unknown'}",
         f"Tool: {finding.source_tool}",
         f"Priority: {priority.upper()}",
+        f"Confidence: {(finding.confidence or 'weak').replace('-', ' ').title()}",
     ]
+    if finding.cvss_score is not None:
+        meta_parts.append(f"CVSS Score: {finding.cvss_score:.1f}")
     if finding.cve_ids:
         meta_parts.append(f"CVEs: {', '.join(finding.cve_ids)}")
+    if finding.priority_reason:
+        meta_parts.append(f"Priority reason: {finding.priority_reason}")
 
     for part in meta_parts:
         elements.append(Paragraph(safe_text(part), styles["meta_field"]))
     elements.append(Spacer(1, 0.15 * inch))
+
+    intel_labels = []
+    if finding.actively_exploited:
+        intel_labels.append("Known Exploited CVE — CISA KEV")
+    if finding.exploit_available:
+        intel_labels.append("Public Exploit Reference")
+    if finding.metasploit_available:
+        intel_labels.append("Metasploit Module")
+    if intel_labels:
+        elements.append(Paragraph("Threat Intelligence", styles["h2"]))
+        elements.append(Paragraph(
+            safe_text(" · ".join(intel_labels)),
+            styles["body"],
+        ))
+        for reference in (finding.exploit_references or [])[:5]:
+            elements.append(Paragraph(
+                safe_text(f"Source: {reference}"),
+                styles["meta_field"],
+            ))
+        elements.append(Spacer(1, 0.15 * inch))
 
     # AI Explanation
     if finding.ai_explanation:
@@ -292,6 +318,12 @@ def _build_finding_section(finding, styles: dict) -> list:
     elif finding.description:
         elements.append(Paragraph("Description", styles["h2"]))
         elements.append(Paragraph(safe_text(finding.description), styles["body"]))
+        elements.append(Spacer(1, 0.15 * inch))
+
+    # Remediation
+    if finding.remediation:
+        elements.append(Paragraph("Remediation", styles["h2"]))
+        elements.append(Paragraph(safe_text(finding.remediation), styles["body"]))
         elements.append(Spacer(1, 0.15 * inch))
 
     # Suggested commands

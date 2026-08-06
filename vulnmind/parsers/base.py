@@ -11,6 +11,7 @@ Two things live here:
 """
 
 import hashlib
+import ipaddress
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -30,7 +31,7 @@ class Finding:
     Fields are grouped by when they get populated:
 
       Parser fields    — set by nmap.py / nikto.py at parse time
-      Enrichment       — set by ai.py after the Groq API call
+      Enrichment       — set by the matcher and optional live data sources
       Metadata         — set at creation time, never mutated
     """
 
@@ -42,7 +43,7 @@ class Finding:
     so we skip the duplicate when building the results list."""
 
     source_tool: str
-    """Which tool produced this: 'nmap', 'nikto', 'metasploit'"""
+    """Which tool produced this: 'nmap', 'nuclei', 'nikto', 'metasploit'"""
 
     source_file: str
     """Absolute path to the file this came from"""
@@ -86,6 +87,34 @@ class Finding:
     cvss_score: Optional[float] = None
     """CVSS v3 base score (0.0 - 10.0). Populated via NVD lookup (--deep mode)."""
 
+    # --- Confidence and exploit intelligence (matcher/live enrichment) ---
+
+    confidence: str = "weak"
+    """Evidence confidence: 'confirmed', 'scanner-reported', 'strong', or 'weak'.
+
+    'confirmed' is reserved for explicit successful exploitation evidence;
+    'scanner-reported' means a scanner explicitly reported the vulnerability or
+    CVE; 'strong' is a product/version KB match; and 'weak' is service-level
+    guidance or an observation without product/version confirmation.
+    """
+
+    actively_exploited: bool = False
+    """True only when an associated CVE is present in the official CISA KEV catalog."""
+
+    exploit_available: bool = False
+    """True when a public exploit reference is associated with a finding CVE."""
+
+    metasploit_available: bool = False
+    """True when a known Metasploit module is associated with the finding."""
+
+    exploit_confidence: str = "none"
+    """Best exploit-intelligence source: cisa-kev, metasploit-module,
+    exploitdb-cve, or none.
+    """
+
+    exploit_references: list = field(default_factory=list)
+    """Bounded source URLs or IDs supporting the exploit-intelligence flags."""
+
     # --- Priority (set after AI enrichment or rule-based fallback) ---
 
     priority: Optional[str] = None
@@ -112,6 +141,12 @@ class Finding:
     false_positive_reason: Optional[str] = None
     """AI explanation for the false_positive_likelihood rating."""
 
+    priority_reason: Optional[str] = None
+    """One sentence explaining why this priority was assigned."""
+
+    remediation: Optional[str] = None
+    """Concrete fix/remediation advice for this finding."""
+
 
 def make_finding_id(host: str, port: Optional[int], title: str) -> str:
     """Generate a short, deterministic ID for a finding.
@@ -123,8 +158,19 @@ def make_finding_id(host: str, port: Optional[int], title: str) -> str:
     Why only 12 chars? Long enough to be unique across any realistic scan,
     short enough to display in a table column.
     """
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
     raw = f"{host}{port}{title}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
+def format_target(host: str, port: Optional[int]) -> str:
+    """Format host and optional port without making IPv6 targets ambiguous."""
+    if port is None:
+        return host
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
 def make_timestamp() -> str:

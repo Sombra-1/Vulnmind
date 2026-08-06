@@ -18,16 +18,26 @@ from setuptools import setup, find_packages
 
 setup(
     name="vulnmind",
-    version="0.1.0",
-    description="Security scan analyzer for pentesters",
+    version="0.6.0",
+    description="Security scan analyzer with CVE confidence and exploit intelligence",
     long_description=(open("README.md").read() if __import__("os").path.exists("README.md") else ""),
     long_description_content_type="text/markdown",
     author="sombra-1",
+    url="https://github.com/Sombra-1/vulnmind",
+    license="MIT",
     python_requires=">=3.10",
 
     # find_packages() auto-discovers all directories with __init__.py
     # This finds: vulnmind/, vulnmind/parsers/
     packages=find_packages(),
+
+    # Bundle the offline CVE knowledge base into the installed package.
+    # Without this, `pip install vulnmind` would ship without services.json
+    # and matcher.py would crash on first use.
+    package_data={
+        "vulnmind.knowledge": ["*.json"],
+    },
+    include_package_data=True,
 
     install_requires=[
         "click>=8.0",        # CLI framework (better than argparse)

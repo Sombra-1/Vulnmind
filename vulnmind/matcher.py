@@ -10,11 +10,21 @@ How it works:
   3. Matches the product and version against known vulnerable entries
   4. Returns the Finding enriched with priority, CVEs, commands, modules
 
-Matching logic (in order of specificity):
-  1. Exact version match   — e.g. vsftpd 2.3.4 exactly
-  2. Version before X      — e.g. OpenSSH < 8.0
-  3. Product only          — e.g. any TP-LINK device
-  4. Service fallback      — e.g. any HTTP server
+Matching logic — in decreasing order of confidence:
+  STRONG  Exact product + exact version match      (high confidence)
+  STRONG  Exact product + version-before match     (high confidence)
+  MEDIUM  Exact product, no version constraint     (lower confidence)
+  WEAK    Service fallback (no product constraint) (gated — only used when
+          the finding has explicit CVE IDs that we're not overwriting)
+
+Key accuracy rules:
+  - Never pick a product-specific KB entry when the finding text does NOT
+    mention that product. (Previous versions would fall through to TP-LINK
+    for any HTTP finding.)
+  - Never overwrite the parser's description with a KB description — the
+    parser's description was built from the actual scan evidence.
+  - Never add KB CVEs unless the KB product actually matched. Blindly
+    merging CVEs from a fallback entry creates false-positive CVE IDs.
 
 Version comparison:
   Versions like "2.4.49", "7.2p2", "2012.55" are normalised to numeric
@@ -45,52 +55,175 @@ def match_finding(finding) -> object:
     Returns an enriched copy of the finding, or the original if no match.
     """
     knowledge = _load_knowledge()
+    initial_confidence = _initial_confidence(finding)
+
+    # A dedicated NSE vulnerability check that explicitly returned negative or
+    # inconclusive evidence outranks version-only inference. Keep the open-port
+    # observation, but do not turn it back into the vulnerability it rejected.
+    if "kb-vulnerability-inference: blocked" in (finding.raw_evidence or ""):
+        return replace(finding, confidence=initial_confidence)
 
     service = (finding.service or "").lower().strip()
     if not service:
-        return finding
+        return replace(finding, confidence=initial_confidence)
 
     # Normalise service aliases
     service = _normalise_service(service)
 
-    entries = knowledge.get(service)
-    if not entries:
-        return finding
-
-    # Extract product and version from the finding description/title
+    # Extract product and version from the finding description/title/evidence
     product, version = _extract_product_version(finding)
 
-    # Find the best matching entry
-    match = _find_best_match(entries, product, version)
-    if not match:
-        return finding
+    # Find the best matching entry — returns (entry, confidence, service)
+    # quality is "strong" (product+version), "product" (product only), or
+    # "weak" (service fallback). Only strong can add version-specific CVEs.
+    match_result = _find_best_service_match(knowledge, service, product, version)
+    if not match_result:
+        return replace(finding, confidence=initial_confidence)
 
-    # Merge CVEs — keep any already found by the parser
-    existing_cves = set(finding.cve_ids or [])
-    new_cves = set(match.get("cves", []))
-    merged_cves = sorted(existing_cves | new_cves)
+    match, confidence, matched_service = match_result
+    finding_confidence = _higher_confidence(initial_confidence, confidence)
 
-    # Build commands with host/port substituted in
+    # CVE merging rules:
+    #   - Strong match: merge KB CVEs with parser CVEs
+    #   - Weak match (no product match): do NOT add KB CVEs — would be
+    #     a false positive. Only use the entry for generic guidance.
+    existing_cve_list = list(dict.fromkeys(finding.cve_ids or []))
+    existing_cves = set(existing_cve_list)
+    kb_cves = set(match.get("cves", []))
+    scanner_confirmed_kb_cve = bool(existing_cves & kb_cves)
+    # Nuclei templates carry explicit classification CVEs. Keep that scanner
+    # CVE set conservative instead of adding adjacent KB CVEs to the finding.
+    allow_kb_cve_merge = confidence == "strong" and finding.source_tool != "nuclei"
+    if allow_kb_cve_merge:
+        merged_cves = list(dict.fromkeys([
+            *existing_cve_list,
+            *match.get("cves", []),
+        ]))
+    else:
+        merged_cves = existing_cve_list
+
+    # Build commands with host/port substituted in.
+    # Only use KB commands on strong matches — weak matches would suggest
+    # commands targeting the wrong product (e.g. TP-LINK hydra on Apache).
     host = finding.host
     port = str(finding.port) if finding.port else ""
-    commands = [
-        cmd.replace("{host}", host).replace("{port}", port)
-        for cmd in match.get("suggested_commands", [])
-    ]
+    commands = []
+    if confidence == "strong":
+        commands = [
+            cmd.replace("{host}", host).replace("{port}", port)
+            for cmd in match.get("suggested_commands", [])
+        ]
+
+    # Modules are safe on a product/version match or an exact intersection
+    # between a scanner-reported CVE and the selected KB entry. A generic
+    # service-only fallback without that intersection must not claim a module.
+    msf_modules = (
+        match.get("metasploit_modules", [])
+        if confidence == "strong" or scanner_confirmed_kb_cve
+        else []
+    )
+
+    # Weak KB fallbacks imported from scanner-script data can be CVE-specific.
+    # Use weak guidance only when the scanner confirmed one of those CVEs or
+    # the entry contains clearly generic service remediation/no CVE list.
+    generic_service_guidance = not kb_cves
+    guidance_supported = (
+        confidence == "strong"
+        or scanner_confirmed_kb_cve
+        or generic_service_guidance
+    )
+    matched_priority = match.get("priority") if guidance_supported else None
+
+    # Priority reason — use KB's field if present, else build one
+    kb_priority_reason = match.get("priority_reason") if guidance_supported else None
+    if not kb_priority_reason and guidance_supported:
+        if confidence == "strong" and merged_cves:
+            kb_priority_reason = (
+                f"Matched '{match.get('product')}' in offline KB — "
+                f"associated with {len(match.get('cves', []))} known CVE(s)."
+            )
+        elif confidence == "strong":
+            kb_priority_reason = f"Matched '{match.get('product')}' in offline KB."
+        else:
+            kb_priority_reason = (
+                f"Service '{matched_service}' exposed — general risk guidance from KB."
+            )
+
+    # Description — NEVER overwrite parser's description. Parser built it from
+    # actual scan evidence. Only fill it if parser left it empty (rare).
+    description = (
+        finding.description
+        or (match.get("description") if guidance_supported else "")
+        or ""
+    )
+
+    # Remediation — use KB if it has one
+    remediation = finding.remediation or (
+        match.get("remediation") if guidance_supported else None
+    )
+
+    # False-positive assessment — strong match = low, weak match = medium.
+    # If a weak service fallback is confirmed by a scanner-reported CVE that
+    # also exists in that KB entry, keep the CVE but do not add unrelated KB CVEs.
+    fp_likelihood = finding.false_positive_likelihood
+    if not fp_likelihood:
+        fp_likelihood = "low" if confidence == "strong" or scanner_confirmed_kb_cve else "medium"
+    fp_reason = finding.false_positive_reason
+    if not fp_reason:
+        if confidence == "strong":
+            fp_reason = "Matched product and/or version against known vulnerable entry."
+        elif scanner_confirmed_kb_cve:
+            fp_reason = "Scanner output reported CVE ID(s); KB match was service-level only."
+        elif confidence == "product":
+            fp_reason = "Product matched, but the affected version or model was not confirmed."
+        else:
+            fp_reason = "Service-level match only — specific product/version not confirmed."
 
     return replace(
         finding,
-        priority=finding.priority or match.get("priority"),
+        priority=finding.priority or matched_priority,
+        priority_reason=finding.priority_reason or kb_priority_reason,
         cve_ids=merged_cves,
-        description=match.get("description") or finding.description,
+        description=description,
         suggested_commands=finding.suggested_commands or commands,
-        metasploit_modules=finding.metasploit_modules or match.get("metasploit_modules", []),
+        metasploit_modules=finding.metasploit_modules or msf_modules,
+        false_positive_likelihood=fp_likelihood,
+        false_positive_reason=fp_reason,
+        remediation=remediation,
+        confidence=finding_confidence,
     )
 
 
 def match_findings(findings: list) -> list:
     """Enrich a list of findings from the knowledge base."""
     return [match_finding(f) for f in findings]
+
+
+_CONFIDENCE_RANK = {
+    "weak": 1,
+    "strong": 2,
+    "scanner-reported": 3,
+    "confirmed": 4,
+}
+
+
+def _initial_confidence(finding) -> str:
+    """Derive confidence from parser-owned evidence before KB CVEs are added."""
+    current = getattr(finding, "confidence", "weak")
+    if current == "confirmed":
+        return current
+    if finding.cve_ids:
+        return "scanner-reported"
+    if current in _CONFIDENCE_RANK:
+        return current
+    return "weak"
+
+
+def _higher_confidence(current: str, candidate: str) -> str:
+    """Return the better-supported confidence without lowering parser evidence."""
+    if _CONFIDENCE_RANK.get(candidate, 0) > _CONFIDENCE_RANK.get(current, 0):
+        return candidate
+    return current
 
 
 # ---------------------------------------------------------------------------
@@ -100,37 +233,216 @@ def match_findings(findings: list) -> list:
 def _normalise_service(service: str) -> str:
     """Map service name variations to the key used in services.json."""
     aliases = {
-        "ssh":          "ssh",
-        "ftp":          "ftp",
-        "http":         "http",
-        "http-proxy":   "http",
-        "https":        "http",
-        "ssl/http":     "http",
-        "upnp":         "upnp",
-        "ssdp":         "upnp",
-        "mysql":        "mysql",
-        "microsoft-ds": "microsoft-ds",
-        "netbios-ssn":  "microsoft-ds",
-        "smb":          "microsoft-ds",
-        "domain":       "domain",
-        "dns":          "domain",
-        "telnet":       "telnet",
-        "ms-wbt-server":"rdp",
-        "rdp":          "rdp",
-        "redis":        "redis",
-        "mongodb":      "mongodb",
-        "mongod":       "mongodb",
-        "tomcat":       "tomcat",
-        "http-tomcat":  "tomcat",
-        "weblogic":     "weblogic",
-        "samba":        "microsoft-ds",
-        "ms-sql-s":     "mssql",
-        "mssql":        "mssql",
-        "docker":       "docker",
-        "postgresql":   "postgresql",
-        "postgres":     "postgresql",
+        # SSH
+        "ssh":              "ssh",
+        "ssh-hostkey":      "ssh",
+        # FTP
+        "ftp":              "ftp",
+        "ftp-data":         "ftp",
+        "ftps":             "ftp",
+        "sftp":             "ftp",
+        # HTTP / HTTPS
+        "http":             "http",
+        "http-proxy":       "http",
+        "https":            "http",
+        "ssl/http":         "http",
+        "http-alt":         "http",
+        "https-alt":        "http",
+        "http-mgmt":        "http",
+        "ssl/https":        "http",
+        "http?":            "http",
+        # UPnP / SSDP
+        "upnp":             "upnp",
+        "ssdp":             "upnp",
+        # SMB / NetBIOS / Samba
+        "microsoft-ds":     "microsoft-ds",
+        "netbios-ssn":      "microsoft-ds",
+        "smb":              "microsoft-ds",
+        "samba":            "microsoft-ds",
+        "netbios-ns":       "microsoft-ds",
+        "cifs":             "microsoft-ds",
+        # DNS
+        "domain":           "domain",
+        "dns":              "domain",
+        "mdns":             "domain",
+        # Telnet
+        "telnet":           "telnet",
+        # RDP
+        "ms-wbt-server":    "rdp",
+        "rdp":              "rdp",
+        # Databases
+        "mysql":            "mysql",
+        "mariadb":          "mysql",
+        "redis":            "redis",
+        "mongodb":          "mongodb",
+        "mongod":           "mongodb",
+        "mongodb-internal": "mongodb",
+        "postgresql":       "postgresql",
+        "postgres":         "postgresql",
+        "ms-sql-s":         "mssql",
+        "ms-sql-m":         "mssql",
+        "mssql":            "mssql",
+        "oracle":           "oracle",
+        "oracle-tns":       "oracle",
+        "cassandra":        "cassandra",
+        "cql":              "cassandra",
+        "elasticsearch":    "elasticsearch",
+        "memcached":        "memcached",
+        # Application servers
+        "tomcat":           "tomcat",
+        "http-tomcat":      "tomcat",
+        "ajp13":            "tomcat",
+        "weblogic":         "weblogic",
+        "jboss":            "jboss",
+        "jboss-remoting":   "jboss",
+        "docker":           "docker",
+        # SMTP / Mail
+        "smtp":             "smtp",
+        "smtps":             "smtp",
+        "smtp-submission":  "smtp",
+        "submission":       "smtp",
+        # IMAP / POP3
+        "imap":             "imap",
+        "imaps":            "imap",
+        "pop3":             "pop3",
+        "pop3s":            "pop3",
+        # SNMP
+        "snmp":             "snmp",
+        # LDAP
+        "ldap":             "ldap",
+        "ldaps":            "ldap",
+        "msrpc":            "rpc",
+        # VNC
+        "vnc":              "vnc",
+        "rfb":              "vnc",
+        "vnc-http":         "vnc",
+        # NFS / RPC
+        "nfs":              "nfs",
+        "sunrpc":           "rpc",
+        "rpcbind":          "rpc",
+        # Kubernetes / CI
+        "kubernetes":       "kubernetes",
+        "jenkins":          "jenkins",
+        "kafka":            "kafka",
+        "rabbitmq":         "rabbitmq",
+        "amqp":             "rabbitmq",
+        "zookeeper":        "zookeeper",
     }
     return aliases.get(service, service)
+
+
+_PRODUCT_SERVICE_ALIASES = {
+    "tomcat": "tomcat",
+    "jboss": "jboss",
+    "weblogic": "weblogic",
+    "jenkins": "jenkins",
+    "elasticsearch": "elasticsearch",
+    "mongodb": "mongodb",
+    "redis": "redis",
+    "mysql": "mysql",
+    "postgresql": "postgresql",
+    "mssql": "mssql",
+    "oracle": "oracle",
+    "docker": "docker",
+    "kubernetes": "kubernetes",
+}
+
+
+# Product detection patterns — ordered: specific before generic
+_PRODUCT_PATTERNS = [
+    # SSH
+    (r"dropbear",               "dropbear"),
+    (r"openssh",                "openssh"),
+    # FTP
+    (r"vsftpd",                 "vsftpd"),
+    (r"proftpd",                "proftpd"),
+    (r"pure-ftpd",              "pure-ftpd"),
+    (r"filezilla\s+server",     "filezilla"),
+    # Application servers
+    (r"apache\s+tomcat",        "tomcat"),
+    (r"tomcat",                 "tomcat"),
+    (r"weblogic",               "weblogic"),
+    (r"jboss",                  "jboss"),
+    (r"wildfly",                "jboss"),
+    (r"glassfish",              "glassfish"),
+    (r"jetty",                  "jetty"),
+    # CMS / frameworks
+    (r"wordpress",              "wordpress"),
+    (r"wp[\s/-]",               "wordpress"),
+    (r"drupal",                 "drupal"),
+    (r"joomla",                 "joomla"),
+    (r"struts",                 "struts"),
+    (r"spring\s+boot",          "spring"),
+    (r"laravel",                "laravel"),
+    (r"django",                 "django"),
+    # HTTP servers
+    (r"apache\s+httpd",         "apache"),
+    (r"apache\s+http",          "apache"),
+    (r"apache(?=/\d)",          "apache"),
+    (r"\bapache\b",             "apache"),
+    (r"nginx",                  "nginx"),
+    (r"microsoft.iis",          "iis"),
+    (r"\biis\b",                "iis"),
+    (r"lighttpd",               "lighttpd"),
+    (r"caddy",                  "caddy"),
+    # Databases
+    (r"mysql",                  "mysql"),
+    (r"mariadb",                "mysql"),
+    (r"postgresql",             "postgresql"),
+    (r"microsoft\s+sql\s+server", "mssql"),
+    (r"mssql",                  "mssql"),
+    (r"redis",                  "redis"),
+    (r"mongodb",                "mongodb"),
+    (r"oracle",                 "oracle"),
+    (r"cassandra",              "cassandra"),
+    (r"elasticsearch",          "elasticsearch"),
+    (r"memcached",              "memcached"),
+    # Network devices
+    (r"tp.?link",               "tp-link"),
+    (r"cisco\s+ios",            "cisco"),
+    (r"cisco",                  "cisco"),
+    (r"juniper",                "juniper"),
+    (r"fortinet",               "fortinet"),
+    (r"palo\s+alto",            "palo-alto"),
+    (r"netgear",                "netgear"),
+    (r"ubiquiti",               "ubiquiti"),
+    # UPnP / SSDP
+    (r"portable sdk.*upnp",     "portable sdk for upnp"),
+    (r"miniupnp",               "miniupnp"),
+    # Samba / SMB
+    (r"samba",                  "samba"),
+    # Windows OS indicators (for SMB findings)
+    (r"windows\s+7",            "windows 7"),
+    (r"windows\s+xp",           "windows xp"),
+    (r"windows\s+server\s+2003", "windows server 2003"),
+    (r"windows\s+server\s+2008", "windows server 2008"),
+    # Docker / Kubernetes
+    (r"docker",                 "docker"),
+    (r"kubernetes",             "kubernetes"),
+    # Mail
+    (r"postfix",                "postfix"),
+    (r"exim",                   "exim"),
+    (r"sendmail",               "sendmail"),
+    (r"dovecot",                "dovecot"),
+    # CI / DevOps
+    (r"jenkins",                "jenkins"),
+    (r"gitlab",                 "gitlab"),
+    # Other
+    (r"openssl",                "openssl"),
+    (r"php",                    "php"),
+    (r"python",                 "python"),
+    (r"ruby",                   "ruby"),
+    (r"node",                   "nodejs"),
+    (r"vnc",                    "vnc"),
+]
+
+# Precompile for performance
+_PRODUCT_PATTERNS_COMPILED = [
+    (re.compile(pat, re.IGNORECASE), name) for pat, name in _PRODUCT_PATTERNS
+]
+
+# Version pattern — numeric with at least one dot, or a "p<N>" suffix
+_VERSION_RE = re.compile(r"\b(\d+(?:\.\d+)+(?:p\d+)?(?:[-_]\w+)?)\b")
 
 
 def _extract_product_version(finding) -> tuple:
@@ -139,6 +451,11 @@ def _extract_product_version(finding) -> tuple:
 
     Looks in: title, description, raw_evidence
     Returns: (product_str, version_str) — both lowercase, may be empty string
+
+    Version extraction:
+      Only matches tokens with at least one dot (e.g. "2.4.49", "7.2p2") to
+      avoid mistaking port numbers or counts for versions. Searches AFTER
+      the product match when a product is identified.
     """
     text = " ".join([
         finding.title or "",
@@ -146,98 +463,171 @@ def _extract_product_version(finding) -> tuple:
         finding.raw_evidence or "",
     ]).lower()
 
-    # Common patterns:
-    #   "dropbear sshd 2012.55"
-    #   "openssh 7.2p2"
-    #   "apache httpd 2.4.49"
-    #   "tp-link wap"
-    #   "mysql 5.7.32"
-
     product = ""
-    version = ""
+    product_end = 0
 
-    # Product detection
-    product_patterns = [
-        (r"dropbear",           "dropbear"),
-        (r"openssh",            "openssh"),
-        (r"apache",             "apache"),
-        (r"nginx",              "nginx"),
-        (r"iis",                "iis"),
-        (r"tp.?link",           "tp-link"),
-        (r"vsftpd",             "vsftpd"),
-        (r"proftpd",            "proftpd"),
-        (r"portable sdk.*upnp", "portable sdk for upnp"),
-        (r"mysql",              "mysql"),
-        (r"mariadb",            "mysql"),
-        (r"redis",              "redis"),
-        (r"mongodb",            "mongodb"),
-        (r"tomcat",             "tomcat"),
-        (r"weblogic",           "weblogic"),
-        (r"samba",              "samba"),
-        (r"microsoft sql server", "mssql"),
-        (r"mssql",              "mssql"),
-        (r"docker",             "docker"),
-        (r"postgresql",         "postgresql"),
-    ]
-    for pattern, name in product_patterns:
-        if re.search(pattern, text):
+    for regex, name in _PRODUCT_PATTERNS_COMPILED:
+        m = regex.search(text)
+        if m:
             product = name
-            version_match = re.search(
-                rf"{pattern}[^\d\n]{{0,30}}(\d+(?:\.\d+)+(?:p\d+)?)",
-                text,
-            )
-            if version_match:
-                version = version_match.group(1)
+            product_end = m.end()
             break
+
+    # Version extraction — search AFTER the product match
+    version = ""
+    if product:
+        # Search a reasonable window after the product name
+        window = text[product_end:product_end + 200]
+        version_match = _VERSION_RE.search(window)
+        if version_match:
+            version = version_match.group(1)
+    else:
+        # No product detected — still try to find a version token anywhere
+        # (helpful for CVE-only findings like "CVE-2021-41773")
+        version_match = _VERSION_RE.search(text)
+        if version_match:
+            version = version_match.group(1)
 
     return product, version
 
 
-def _find_best_match(entries: list, product: str, version: str) -> dict | None:
+def _find_best_match(entries: list, product: str, version: str):
     """
     Find the best matching entry from the knowledge base.
 
-    Priority order:
-      1. Exact version match for the detected product
-      2. Version-before match for the detected product
-      3. Product-only match (no version constraint)
-      4. Service-level fallback (product=None entry)
+    Returns: (entry_dict, confidence_str) or None
+      quality is "strong" (product+version), "product" (product only), or
+      "weak" (service fallback only)
+
+    Match priority:
+      1. STRONG: product match + exact version match
+      2. STRONG: product match + version-before match
+      3. PRODUCT: product match + no version constraint on entry
+      4. WEAK:   service fallback (entry with no product constraint)
+
+    Critical rule: we NEVER return a product-specific entry for a different
+    product just because product/version didn't match. That was the TP-LINK bug.
     """
-    fallback = None
+    product = (product or "").lower()
+
+    fallback = None  # entry with no product constraint
+    best_product_match = None  # any entry whose product matches ours
+    best_version_match = None  # same, but with a matching version
 
     for entry in entries:
         entry_product = (entry.get("product") or "").lower()
         version_match = entry.get("version_match")
         version_before = entry.get("version_before")
 
-        # Track the fallback (entry with no product constraint)
+        # Entry with no product constraint — eligible as fallback
         if not entry_product:
             if fallback is None:
                 fallback = entry
             continue
 
-        # Product-specific entries must never match without product evidence.
-        if entry_product and (
-            not product
-            or (entry_product not in product and product not in entry_product)
-        ):
+        # Entry has a product constraint. Does it match ours?
+        if not product:
+            # We couldn't detect a product — cannot pick a product-specific entry.
             continue
 
-        # Exact version match
-        if version_match and version:
-            if version.startswith(version_match):
-                return entry
+        product_ok = (
+            entry_product in product
+            or product in entry_product
+            or _product_equivalent(product, entry_product)
+        )
+        if not product_ok:
+            continue
 
-        # Version-before match
-        if version_before and version:
-            if _version_less_than(version, version_before):
-                return entry
+        # Product matches. Now check version constraints.
 
-        # Product matched, no version constraint
+        # 1. Exact version prefix match — highest confidence
+        if version_match and version and _version_matches(version, version_match):
+            return (entry, "strong")
+
+        # 2. Version-before match
+        if version_before and version and _version_less_than(version, version_before):
+            if best_version_match is None:
+                best_version_match = entry
+            continue
+
+        # 3. Product matched, no version constraint on entry
         if not version_match and not version_before:
-            return entry
+            if best_product_match is None:
+                best_product_match = entry
 
-    return fallback
+    # Prefer: version-match > product-match > service fallback
+    if best_version_match:
+        return (best_version_match, "strong")
+    if best_product_match:
+        return (best_product_match, "product")
+    if fallback:
+        return (fallback, "weak")
+    return None
+
+
+def _find_best_service_match(knowledge: dict, service: str, product: str, version: str):
+    """
+    Find the best KB entry across the scanner service and product-derived service.
+
+    Some tools report application servers as generic HTTP services. For example,
+    nmap commonly emits service=http, product="Apache Tomcat". Try a Tomcat KB
+    match before settling for the generic HTTP fallback.
+    """
+    candidates = []
+    product_service = _PRODUCT_SERVICE_ALIASES.get(product)
+    for candidate in (product_service, service):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    fallback_result = None
+    quality_rank = {"weak": 1, "product": 2, "strong": 3}
+    for candidate in candidates:
+        entries = knowledge.get(candidate)
+        if not entries:
+            continue
+        result = _find_best_match(entries, product, version)
+        if not result:
+            continue
+        entry, confidence = result
+        if confidence == "strong":
+            return entry, confidence, candidate
+        if (
+            fallback_result is None
+            or quality_rank.get(confidence, 0)
+            > quality_rank.get(fallback_result[1], 0)
+        ):
+            fallback_result = (entry, confidence, candidate)
+
+    return fallback_result
+
+
+def _version_matches(version: str, expected: str) -> bool:
+    """
+    Return True for an exact version token or bounded package suffix.
+
+    This allows "2.4.49-ubuntu1" to match "2.4.49" but prevents
+    "2.4.490" from matching "2.4.49".
+    """
+    if version == expected:
+        return True
+    if not version.startswith(expected):
+        return False
+    next_char = version[len(expected):len(expected) + 1]
+    return next_char in {"-", "_", "+", "~"}
+
+
+def _product_equivalent(p1: str, p2: str) -> bool:
+    """Return True if two product names refer to the same thing."""
+    equivalents = [
+        {"apache", "apache httpd", "apache http server"},
+        {"mysql", "mariadb"},
+        {"openssh", "ssh"},
+        {"mssql", "microsoft sql server"},
+    ]
+    for group in equivalents:
+        if p1 in group and p2 in group:
+            return True
+    return False
 
 
 def _version_less_than(v1: str, v2: str) -> bool:
@@ -248,7 +638,6 @@ def _version_less_than(v1: str, v2: str) -> bool:
     Non-numeric parts (like 'p2') are stripped for comparison.
     """
     def normalise(v: str) -> tuple:
-        # Extract only numeric parts separated by dots
         parts = re.findall(r"\d+", v)
         return tuple(int(p) for p in parts)
 
