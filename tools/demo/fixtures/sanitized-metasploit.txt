@@ -1,0 +1,4 @@
+Metasploit Framework 6
+msf6 > run
+[+] 127.0.0.1:80 - Lab validation recorded for CVE-2021-41773
+[*] 127.0.0.1:3306 - MySQL 5.7.32 service observed

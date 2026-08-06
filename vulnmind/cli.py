@@ -151,7 +151,7 @@ def cli(ctx):
     "--report",
     type=click.Choice(["pdf"]),
     default=None,
-    help="Generate a PDF report (requires --enrich).",
+    help="Generate a PDF report.",
 )
 @click.option(
     "--enrich",
@@ -228,18 +228,10 @@ def analyze(files: tuple, report: str | None, enrich: bool):
 
     # --- PDF ---
     if report == "pdf":
-        if not enrich:
-            console.print(Panel(
-                "PDF reports require the [bold]--enrich[/bold] flag.\n\n"
-                "Run: [bold]vulnmind analyze scan.xml --enrich --report pdf[/bold]",
-                title="[bold yellow]--enrich Required[/bold yellow]",
-                border_style="yellow",
-            ))
-        else:
-            from vulnmind.report import generate_pdf
-            output_path = "vulnmind_report.pdf"
-            generate_pdf(findings, output_path)
-            console.print(f"\n[green]Report saved:[/green] {output_path}")
+        from vulnmind.report import generate_pdf
+        output_path = "vulnmind_report.pdf"
+        generate_pdf(findings, output_path)
+        console.print(f"\n[green]Report saved:[/green] {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +301,7 @@ def display_results(findings: list, enrich: bool):
 
     if not enrich:
         console.print(Panel(
-            "Add [bold]--enrich[/bold] for AI explanations, exploit commands, and PDF reports.\n\n"
+            "Add [bold]--enrich[/bold] for AI explanations and false-positive assessment.\n\n"
             "Requires a free Groq API key: [bold]console.groq.com[/bold]",
             title="[bold dim]Tip: Deep Analysis Available[/bold dim]",
             border_style="dim",

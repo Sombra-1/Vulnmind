@@ -68,7 +68,7 @@ def match_finding(finding) -> object:
     # Merge CVEs — keep any already found by the parser
     existing_cves = set(finding.cve_ids or [])
     new_cves = set(match.get("cves", []))
-    merged_cves = list(existing_cves | new_cves)
+    merged_cves = sorted(existing_cves | new_cves)
 
     # Build commands with host/port substituted in
     host = finding.host
@@ -182,12 +182,13 @@ def _extract_product_version(finding) -> tuple:
     for pattern, name in product_patterns:
         if re.search(pattern, text):
             product = name
+            version_match = re.search(
+                rf"{pattern}[^\d\n]{{0,30}}(\d+(?:\.\d+)+(?:p\d+)?)",
+                text,
+            )
+            if version_match:
+                version = version_match.group(1)
             break
-
-    # Version extraction — grab the first version-like string after the product
-    version_match = re.search(r"(\d+[\.\d]+(?:p\d+)?(?:\.\w+)?)", text)
-    if version_match:
-        version = version_match.group(1)
 
     return product, version
 
@@ -215,8 +216,11 @@ def _find_best_match(entries: list, product: str, version: str) -> dict | None:
                 fallback = entry
             continue
 
-        # Skip if product doesn't match
-        if product and entry_product and entry_product not in product and product not in entry_product:
+        # Product-specific entries must never match without product evidence.
+        if entry_product and (
+            not product
+            or (entry_product not in product and product not in entry_product)
+        ):
             continue
 
         # Exact version match

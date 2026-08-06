@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720" role="img" aria-labelledby="title desc">
+  <title id="title">VulnMind architecture</title>
+  <desc id="desc">Nmap, Nikto, and Metasploit outputs flow through content-based format detection, parsers, normalized findings, offline knowledge matching and optional Groq enrichment to terminal and PDF outputs.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset="1" stop-color="#101b2b"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity=".35"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#50e3c2"/></marker>
+    <style>
+      .box{fill:#111f32;stroke:#29415e;stroke-width:2;rx:18;filter:url(#shadow)}
+      .t{fill:#edf7ff;font:600 28px 'Noto Sans',sans-serif;text-anchor:middle}
+      .s{fill:#9db0c6;font:20px 'Noto Sans',sans-serif;text-anchor:middle}
+      .a{stroke:#50e3c2;stroke-width:4;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="720" fill="url(#bg)"/>
+  <text x="800" y="62" class="t" font-size="34">VulnMind analysis pipeline</text>
+  <rect class="box" x="70" y="130" width="300" height="160"/>
+  <text class="t" x="220" y="190">Scanner output</text>
+  <text class="s" x="220" y="230">Nmap XML / text</text>
+  <text class="s" x="220" y="260">Nikto · Metasploit</text>
+  <line class="a" x1="370" y1="210" x2="470" y2="210"/>
+  <rect class="box" x="480" y="130" width="300" height="160"/>
+  <text class="t" x="630" y="190">Auto-detection</text>
+  <text class="s" x="630" y="230">Content signatures</text>
+  <text class="s" x="630" y="260">Format-specific parsers</text>
+  <line class="a" x1="780" y1="210" x2="880" y2="210"/>
+  <rect class="box" x="890" y="130" width="300" height="160"/>
+  <text class="t" x="1040" y="190">Normalized findings</text>
+  <text class="s" x="1040" y="230">Targets · services · evidence</text>
+  <text class="s" x="1040" y="260">Deterministic deduplication</text>
+  <line class="a" x1="1190" y1="210" x2="1290" y2="210"/>
+  <rect class="box" x="1300" y="130" width="240" height="160"/>
+  <text class="t" x="1420" y="190">Offline match</text>
+  <text class="s" x="1420" y="230">Priority · CVEs</text>
+  <text class="s" x="1420" y="260">Commands · modules</text>
+  <line class="a" x1="1420" y1="290" x2="1420" y2="400"/>
+  <rect class="box" x="1180" y="410" width="360" height="160"/>
+  <text class="t" x="1360" y="470">Terminal + PDF</text>
+  <text class="s" x="1360" y="510">Readable findings</text>
+  <text class="s" x="1360" y="540">Shareable report</text>
+  <rect class="box" x="680" y="410" width="360" height="160" stroke-dasharray="10 8"/>
+  <text class="t" x="860" y="470">Optional enrichment</text>
+  <text class="s" x="860" y="510">Groq-powered explanations</text>
+  <text class="s" x="860" y="540">False-positive assessment</text>
+  <line class="a" x1="1300" y1="290" x2="1000" y2="410"/>
+  <line class="a" x1="1040" y1="490" x2="1170" y2="490"/>
+  <text x="70" y="665" fill="#6f849d" font="18px 'Noto Sans',sans-serif">Offline analysis is the default. Optional enrichment requires configuration and network access.</text>
+</svg>

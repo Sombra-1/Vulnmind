@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV -sC -oX sanitized-nmap.txt 127.0.0.1" start="1700000000" version="7.94" xmloutputversion="1.05">
+  <host starttime="1700000001" endtime="1700000002">
+    <status state="up" reason="localhost-response"/>
+    <address addr="127.0.0.1" addrtype="ipv4"/>
+    <hostnames><hostname name="demo.lab" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="80">
+        <state state="open" reason="syn-ack"/>
+        <service name="http" product="Apache httpd" version="2.4.49"/>
+        <script id="http-vuln-cve2021-41773" output="VULNERABLE: Apache HTTP Server 2.4.49 path traversal. IDs: CVE:CVE-2021-41773"/>
+      </port>
+      <port protocol="tcp" portid="3306">
+        <state state="open" reason="syn-ack"/>
+        <service name="mysql" product="MySQL" version="5.7.32"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>

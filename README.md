@@ -1,135 +1,169 @@
 # VulnMind
 
-Security scan analyzer for pentesters. Parse nmap and nikto output, get structured findings with CVE matches, priority ratings, suggested commands, and Metasploit modules — instantly, offline, no setup required.
+![VulnMind — turn scanner output into prioritized, explainable security findings](docs/assets/vulnmind-banner.png)
 
-```
-vulnmind analyze scan.xml
-```
+VulnMind turns supported scanner-output files into normalized, prioritized
+findings with offline CVE context, suggested verification commands, and
+relevant Metasploit modules.
 
-```
-VulnMind  ·  1 critical  2 high  1 medium  1 low
+![VulnMind analyzing sanitized local scanner output](docs/assets/vulnmind-demo.gif)
 
-  CRITICAL  smb-vuln-ms17-010 on 192.168.1.10:445
-  Target: 192.168.1.10:445  [smb]
-  CVEs:   CVE-2017-0144, CVE-2020-0796
+## What it does
 
-  SMB service detected. Check for EternalBlue (MS17-010) and SMBGhost.
-  These are among the most exploited vulnerabilities ever.
+- Auto-detects Nmap XML/text, Nikto text, and Metasploit console output.
+- Normalizes and deduplicates findings across multiple files.
+- Matches product/version evidence against an offline knowledge base.
+- Produces readable terminal findings and PDF reports.
 
-  Next steps:
-    $ nmap --script smb-vuln-ms17-010 -p 445 192.168.1.10
-    $ nmap --script smb-vuln-cve-2020-0796 -p 445 192.168.1.10
+## Quick start
 
-  Metasploit:
-    msf > use exploit/windows/smb/ms17_010_eternalblue
-    msf > use auxiliary/scanner/smb/smb_ms17_010
-```
-
----
-
-## Install
+Requires Python 3.10+.
 
 ```bash
 pip install vulnmind
+vulnmind analyze scan.xml
 ```
 
-Or from source:
+Or install from source:
 
 ```bash
-git clone https://github.com/sombra-1/vulnmind
+git clone https://github.com/Sombra-1/vulnmind
 cd vulnmind
+python -m venv .venv
+. .venv/bin/activate
 pip install -e .
 ```
 
-**Supported distros:** Kali Linux, Ubuntu, Arch Linux, Parrot OS, BlackArch
-
-**Requirements:** Python 3.10+
-
----
-
-## Usage
-
-### Basic — no setup required
+Run one or more saved scanner-output files:
 
 ```bash
-# nmap scan
-nmap -sV -sC -oX scan.xml 192.168.1.0/24
-vulnmind analyze scan.xml
-
-# nikto scan
-nikto -h 192.168.1.10 -o nikto.txt
-vulnmind analyze nikto.txt
-
-# multiple files at once
 vulnmind analyze scan.xml nikto.txt
 ```
 
-### Deep analysis (requires free API key)
+![Watch the VulnMind technical demo](docs/assets/video-thumbnail.png)
+
+The full-resolution technical demo is kept out of normal Git history. See the
+[reproducible demo package](tools/demo/README.md) to render and verify it
+locally.
+
+## How it works
+
+![VulnMind analysis architecture](docs/assets/architecture.svg)
+
+VulnMind reads saved scanner output; it does not run a scan. Content signatures
+select a format-specific parser, findings are normalized and deduplicated, then
+the offline knowledge base adds supported product/version context. Optional
+Groq enrichment is a separate, networked step.
+
+## Usage
+
+### Basic offline analysis
 
 ```bash
-# get a free key at console.groq.com
-vulnmind config set-key gsk_...
+# Nmap XML (recommended)
+nmap -sV -sC -oX scan.xml 192.0.2.10
+vulnmind analyze scan.xml
 
+# Nikto text
+nikto -h 192.0.2.10 -o nikto.txt
+vulnmind analyze nikto.txt
+
+# Multiple files
+vulnmind analyze scan.xml nikto.txt metasploit-console.txt
+```
+
+Only run scanners against systems you own or are explicitly authorized to
+assess. The bundled media demo uses sanitized files and contacts no target.
+
+### PDF report
+
+```bash
+vulnmind analyze scan.xml --report pdf
+```
+
+The report is written to `vulnmind_report.pdf`.
+
+### Optional Groq enrichment
+
+```bash
+# Get a key at console.groq.com
+vulnmind config set-key gsk_...
 vulnmind analyze scan.xml --enrich
 ```
 
-`--enrich` adds plain-English explanations, more specific commands, and false positive assessment.
-
-### PDF report (Enrich)
-
-```bash
-vulnmind analyze scan.xml --enrich --report pdf
-```
-
----
+`--enrich` adds model-generated plain-English explanations and false-positive
+assessment. It requires network access and a Groq API key; offline matching
+remains available without it.
 
 ## Supported formats
 
-| Tool | Format | Flag |
-|---|---|---|
-| nmap | XML | `-oX scan.xml` |
-| nmap | Text | `-oN scan.txt` |
-| nmap | All formats | `-oA scan` |
-| nikto | Text | `-o scan.txt` |
+| Tool | Input |
+|---|---|
+| Nmap | XML (`-oX`) |
+| Nmap | Normal text (`-oN` or redirected output) |
+| Nikto | Text output |
+| Metasploit | Console output containing an `msf` prompt and result lines |
 
-VulnMind auto-detects the format — no need to specify it.
+VulnMind auto-detects formats from their content rather than trusting file
+extensions.
 
----
+## Example output
+
+![Standard terminal analysis](docs/assets/terminal-analysis.png)
+
+![Offline CVE, priority, command, and module context](docs/assets/deep-intelligence.png)
+
+![Generated PDF report preview](docs/assets/pdf-report-preview.png)
+
+The screenshots above are rendered from
+`tools/demo/fixtures/sanitized-nmap.txt` and the real CLI output.
 
 ## Features
 
-**Free (this repo)**
-- Parse nmap XML and text output
-- Parse nikto output
-- Offline knowledge base — CVE matching, priority ratings, suggested commands
-- Metasploit module suggestions
-- Multi-file analysis with automatic deduplication
-- Clean terminal output with Rich
+### Offline
 
-**Enrich**
-- Deep analysis via `--enrich` (plain-English explanations, false positive filtering)
-- PDF report generation
-- Priority support
+- Nmap XML/text, Nikto text, and Metasploit console parsers
+- Content-based format detection
+- Normalized finding model and deterministic multi-file deduplication
+- Product/version knowledge matching
+- Priority, CVE, verification-command, and Metasploit-module context where the
+  bundled knowledge base has a matching entry
+- Rich terminal output and PDF reports
 
-Get a Enrich license at **vulnmind.io** (coming soon)
+### Optional enrichment
 
----
+- Groq-powered explanations
+- Suggested command/module refinement
+- False-positive likelihood assessment
+
+Optional enrichment is assistive output, not a substitute for validating
+scanner evidence or applying professional judgment.
+
+## Media reproduction
+
+```bash
+tools/demo/prepare_demo.sh
+tools/demo/render_assets.sh
+tools/demo/verify_media.sh
+```
+
+Dependencies and exact output locations are documented in
+[`tools/demo/README.md`](tools/demo/README.md).
 
 ## Contributing
 
-Pull requests welcome. The most useful contributions:
+Pull requests are welcome. Useful contributions include:
 
-- New parsers (`vulnmind/parsers/`) — Metasploit, OpenVAS, Burp Suite, Nessus
-- Knowledge base entries (`vulnmind/knowledge/services.json`) — more services, more CVEs
-- Bug reports with sample scan files
-
----
+- New parsers in `vulnmind/parsers/`
+- Corrections or additions to `vulnmind/knowledge/services.json`
+- Regression tests and sanitized scanner-output fixtures
+- Bug reports with secrets and target details removed
 
 ## Adding a parser
 
-1. Create `vulnmind/parsers/yourparser.py`, subclass `BaseParser`
-2. Implement `can_parse()` and `parse()`
-3. Register in `vulnmind/parsers/__init__.py`
+1. Create `vulnmind/parsers/yourparser.py` and subclass `BaseParser`.
+2. Implement `can_parse()` and `parse()`.
+3. Register it in `vulnmind/parsers/__init__.py`.
 
 ```python
 class MyParser(BaseParser):
@@ -137,11 +171,8 @@ class MyParser(BaseParser):
         return "MyTool v" in content_preview
 
     def parse(self, file_path, content):
-        # return List[Finding]
-        ...
+        return []
 ```
-
----
 
 ## License
 
