@@ -155,7 +155,11 @@ def terminal_image(size, output: str, command: str, start: str | None = None,
 
 
 def run_cli() -> tuple[str, str, Path]:
-    env = os.environ | {"NO_COLOR": "1", "COLUMNS": "112"}
+    env = os.environ | {
+        "NO_COLOR": "1",
+        "COLUMNS": "112",
+        "VULNMIND_UPDATE_CHECKS": "off",
+    }
     command = [str(CLI), "analyze", str(FIXTURE), str(MSF_FIXTURE)]
     result = subprocess.run(command, cwd=ROOT, env=env, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
@@ -218,11 +222,11 @@ VulnMind turns scanner output into prioritized security findings.
 
 3
 00:00:13,000 --> 00:00:28,000
-Not just CVEs: target, evidence, context and priority.
+Not just CVEs: confidence, evidence, context and priority.
 
 4
 00:00:28,000 --> 00:00:40,000
-Nmap, Nikto and Metasploit. Terminal and PDF.
+Nmap, Nuclei, Nikto and Metasploit. Terminal, JSON and PDF.
 
 5
 00:00:40,000 --> 00:00:52,000
@@ -230,7 +234,7 @@ Open source at github.com/Sombra-1/vulnmind
 """)
     (OUTPUT / "vulnmind-linkedin-post.md").write_text("""I built VulnMind to make scanner output easier to act on.
 
-It parses Nmap XML/text, Nikto text, and Metasploit console output, normalizes
+It parses Nmap XML/text, Nuclei JSONL, Nikto text, and Metasploit console output, normalizes
 the findings, and uses an offline knowledge base to add priority, CVE context,
 suggested verification commands, and relevant Metasploit modules. The result
 stays explainable: you can trace each finding back to the scanner evidence.
@@ -261,8 +265,8 @@ Only test systems you own or are explicitly authorized to assess.
 
 - 0–3s: Which scanner issue matters?
 - 3–13s: Raw file to prioritized findings.
-- 13–28s: Evidence, target, CVE context, and priority.
-- 28–40s: Supported inputs and outputs, then PDF.
+- 13–28s: Confidence, evidence, target, CVE context, and priority.
+- 28–40s: Supported inputs and terminal/JSON/PDF outputs.
 - 40–52s: Open-source closing card and repository URL.
 
 No narration or music is included; every message is burned into the image.
@@ -340,8 +344,8 @@ def main():
     report = pdf_preview.resize((1920, 1080), Image.Resampling.LANCZOS)
     pipeline = card(
         (1920, 1080), "One offline analysis pipeline.",
-        "Content detection → parsing → normalization → knowledge matching → terminal / PDF",
-        "Nmap XML + text · Nikto text · Metasploit console",
+        "Detection → parsing → matching → optional NVD / KEV / exploit intelligence → outputs",
+        "Nmap · Nuclei · Nikto · Metasploit → Terminal · JSON · PDF",
     )
     close = card(
         (1920, 1080), "Open source. Built for authorized testing.",
@@ -367,8 +371,8 @@ def main():
         start="╭", max_lines=18,
     )
     li_context = card(
-        (1080, 1350), "Not just CVEs.\nEvidence, context and priority.",
-        "CRITICAL · demo.lab:80 · CVE-2021-41773",
+        (1080, 1350), "Not just CVEs.\nConfidence, context and priority.",
+        "CRITICAL · Scanner Reported · demo.lab:80 · CVE-2021-41773",
         "Offline knowledge match",
         ["WHY IT MATTERS", "Apache 2.4.49 path traversal / RCE context",
          "", "NEXT STEP", "Version-specific verification command",
@@ -376,8 +380,8 @@ def main():
         RED,
     )
     li_report = card(
-        (1080, 1350), "Nmap · Nikto · Metasploit",
-        "Terminal · PDF",
+        (1080, 1350), "Nmap · Nuclei · Nikto · Metasploit",
+        "Terminal · JSON · PDF",
         "Supported today",
         ["$ vulnmind analyze sanitized-nmap.txt --report pdf",
          "", "REPORT SAVED", "vulnmind_report.pdf"],

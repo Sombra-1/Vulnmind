@@ -24,8 +24,8 @@ tools/demo/verify_media.sh
 The first command installs VulnMind into `.venv`. Rendering writes repository
 images to `docs/assets/` and local video deliverables to ignored `output/`.
 
-`--enrich` is intentionally absent from the deterministic recording: it uses
-the optional Groq integration and cannot be reproduced offline. VulnMind does
-not currently implement Nuclei input, JSON output, CISA KEV lookup, official
-CVSS lookup, or an evidence-confidence field, so the media makes none of those
-claims.
+`--enrich` and `--deep` are intentionally absent from the deterministic
+recording: Groq, NVD, CISA KEV, and ExploitDB refreshes require network access.
+The media uses offline parsing and matching while accurately listing the
+implemented Nmap, Nuclei, Nikto, Metasploit, JSON, PDF, confidence, CVSS, KEV,
+and exploit-intelligence capabilities.
